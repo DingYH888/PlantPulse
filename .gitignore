@@ -218,3 +218,23 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# ===== Node / Vue / Vite =====
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+
+# ===== 本地数据库文件 =====
+*.db
+*.db3
+*.sqlite3
