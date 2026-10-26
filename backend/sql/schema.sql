@@ -14,25 +14,44 @@ USE `plantpulse`;
 -- ------------------------------------------------------------
 -- 1. users 用户账号表
 -- 约束1：password_hash 仅存 bcrypt 哈希，禁止明文
+-- 账号体系：nickname 为唯一登录账号；username/email 预留扩展（可空）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `users` (
   `id`            BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
-  `username`      VARCHAR(32)  NOT NULL COMMENT '用户名（3-20位字母数字下划线）',
-  `email`         VARCHAR(128) NOT NULL COMMENT '邮箱（登录凭证之一）',
+  `nickname`      VARCHAR(32)  NOT NULL COMMENT '昵称（登录账号，3-20位字母数字下划线）',
   `password_hash` VARCHAR(128) NOT NULL COMMENT 'bcrypt密码哈希（约束1：不存明文）',
-  `nickname`      VARCHAR(32)  NULL COMMENT '昵称',
+  `username`      VARCHAR(32)  NULL COMMENT '用户名（预留扩展）',
+  `email`         VARCHAR(128) NULL COMMENT '邮箱（预留扩展）',
   `avatar_url`    VARCHAR(512) NULL COMMENT '头像URL',
   `role`          VARCHAR(16)  NOT NULL DEFAULT 'ROLE_USER' COMMENT '角色：ROLE_USER/ROLE_ADMIN',
   `is_active`     TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '是否启用（禁用后禁止登录）',
   `created_at`    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间（约束4）',
   `updated_at`    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_users_username` (`username`),
-  UNIQUE KEY `uq_users_email` (`email`)
+  UNIQUE KEY `uq_users_nickname` (`nickname`),
+  KEY `idx_users_username` (`username`),
+  KEY `idx_users_email` (`email`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户账号表';
 
 -- ------------------------------------------------------------
--- 2. plants 植物档案表
+-- 2. captcha_codes 图形验证码表
+-- 一次性校验（is_used）+ 5 分钟有效期（expires_at），注册防刷
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `captcha_codes` (
+  `id`          BIGINT      NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `captcha_id`  VARCHAR(64) NOT NULL COMMENT '验证码唯一标识（uuid，注册时回传）',
+  `code`        VARCHAR(8)  NOT NULL COMMENT '验证码明文（4位数字）',
+  `expires_at`  DATETIME    NOT NULL COMMENT '过期时间（生成时间 + 5分钟）',
+  `is_used`     TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '是否已使用（一次性校验）',
+  `created_at`  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间（约束4）',
+  `updated_at`  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_captcha_codes_id` (`captcha_id`),
+  KEY `idx_captcha_codes_expires_at` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='图形验证码表';
+
+-- ------------------------------------------------------------
+-- 3. plants 植物档案表
 -- 约束2：user_id 外键实现数据隔离，A用户不可见B用户植物
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `plants` (
@@ -53,7 +72,7 @@ CREATE TABLE IF NOT EXISTS `plants` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='植物档案表';
 
 -- ------------------------------------------------------------
--- 3. plant_record 养护/打卡记录表
+-- 4. plant_record 养护/打卡记录表
 -- 约束3：record_type 为原生 ENUM 枚举
 -- BR-03：同用户同植物同类型同日期唯一（防重复打卡）
 -- ------------------------------------------------------------
@@ -77,7 +96,7 @@ CREATE TABLE IF NOT EXISTS `plant_record` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='植物养护/打卡记录表';
 
 -- ------------------------------------------------------------
--- 4. plant_metric 养护指标表（P3 数据图表数据源）
+-- 5. plant_metric 养护指标表（P3 数据图表数据源）
 -- 值域校验见 PRD 5.3.3
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `plant_metric` (
@@ -100,7 +119,7 @@ CREATE TABLE IF NOT EXISTS `plant_metric` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='植物养护指标表';
 
 -- ------------------------------------------------------------
--- 5. ai_advice AI 养护建议表
+-- 6. ai_advice AI 养护建议表
 -- 防幻觉：is_fallback 降级标注 / doc_refs 来源引用 / trace 全链路日志（PRD 8.4）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `ai_advice` (

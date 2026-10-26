@@ -22,11 +22,13 @@ class Settings(BaseSettings):
     # 数据库连接串（默认 MySQL 8，本地开发账号 root；开发本地可切 SQLite 调试）
     DATABASE_URL: str = "mysql://root:123456@127.0.0.1:3306/plantpulse?charset=utf8mb4"
 
-    # JWT 配置
+    # JWT 配置（单 token 方案：登录签发一个 token，7 天有效）
     JWT_SECRET: str = "please-change-me"
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    ACCESS_TOKEN_EXPIRE_DAYS: int = 7
+
+    # 图形验证码有效期（分钟）
+    CAPTCHA_EXPIRE_MINUTES: int = 5
 
     # CORS 允许来源（逗号分隔）
     CORS_ORIGINS: str = "http://localhost:5173"

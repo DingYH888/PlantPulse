@@ -7,7 +7,6 @@
 
 from typing import Annotated
 
-import jwt
 from fastapi import Depends, Header
 from jwt import PyJWTError
 
@@ -16,10 +15,12 @@ from app.core.security import decode_token
 from app.models.user import User
 
 
-async def get_current_user(authorization: Annotated[str, Header()]) -> User:
+async def get_current_user(authorization: Annotated[str | None, Header()] = None) -> User:
     """鉴权依赖：校验 Bearer token 并返回当前用户。
 
     失败时统一抛出 BizException(code=401)，由全局异常处理器转换为标准返回格式。
+    注意：Header 参数必须有默认值 None，否则未携带请求头时 FastAPI 会在进入
+    函数前抛参数校验错误（400），导致无法统一返回 401。
     """
     # 1. 校验 Authorization 头格式
     if not authorization or not authorization.startswith("Bearer "):

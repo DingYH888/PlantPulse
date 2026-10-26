@@ -14,7 +14,7 @@ class TimestampMixin(models.Model):
     auto_now：每次 update/save 时自动刷新 updated_at。
     """
 
-    id = fields.BigIntField(pk=True, description="主键ID")
+    id = fields.BigIntField(primary_key=True, description="主键ID")
     created_at = fields.DatetimeField(auto_now_add=True, description="创建时间（约束4）")
     updated_at = fields.DatetimeField(auto_now=True, description="更新时间（记录变更时自动刷新）")
 

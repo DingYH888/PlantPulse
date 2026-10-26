@@ -22,6 +22,7 @@ settings = get_settings()
 TORTOISE_MODULES = {
     "models": [
         "app.models.user",
+        "app.models.captcha",
         "app.models.plant",
         "app.models.plant_record",
         "app.models.plant_metric",

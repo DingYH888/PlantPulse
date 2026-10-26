@@ -4,16 +4,18 @@
 """
 
 from app.models.ai_advice import AiAdvice
+from app.models.captcha import CaptchaCode
 from app.models.plant import Plant
 from app.models.plant_metric import PlantMetric
 from app.models.plant_record import PlantRecord, RecordType
 from app.models.user import User
 
 __all__ = [
-    "User",
+    "AiAdvice",
+    "CaptchaCode",
     "Plant",
+    "PlantMetric",
     "PlantRecord",
     "RecordType",
-    "PlantMetric",
-    "AiAdvice",
+    "User",
 ]
