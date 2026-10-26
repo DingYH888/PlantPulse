@@ -1,6 +1,7 @@
 """PlantPulse 后端应用入口（PRD 3.1/3.4）。
 
 职责：应用装配——数据库初始化、CORS、全局异常处理、路由注册。
+数据层：Tortoise-ORM（backend/app/models，默认连接 MySQL 8）。
 启动命令：uvicorn app.main:app --reload --port 8000
 """
 
@@ -22,6 +23,9 @@ TORTOISE_MODULES = {
     "models": [
         "app.models.user",
         "app.models.plant",
+        "app.models.plant_record",
+        "app.models.plant_metric",
+        "app.models.ai_advice",
     ]
 }
 

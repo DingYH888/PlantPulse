@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
 
-    # 数据库连接串（开发默认 SQLite；生产切换 MySQL）
-    DATABASE_URL: str = "sqlite://./db.sqlite3"
+    # 数据库连接串（默认 MySQL 8，本地开发账号 root；开发本地可切 SQLite 调试）
+    DATABASE_URL: str = "mysql://root:123456@127.0.0.1:3306/plantpulse?charset=utf8mb4"
 
     # JWT 配置
     JWT_SECRET: str = "please-change-me"

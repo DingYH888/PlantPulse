@@ -1,14 +1,16 @@
 # ===== PlantPulse 后端依赖清单 =====
 # 安装命令：pip install -r requirements.txt
-# 说明：Python 3.13 + FastAPI + Tortoise-ORM + JWT
+# 说明：Python 3.13 + FastAPI + Tortoise-ORM + MySQL + JWT
 
 # --- Web 框架 ---
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.30
 
-# --- 数据层 ---
+# --- 数据层（Tortoise-ORM + MySQL 异步驱动）---
 tortoise-orm>=0.22.0
+aiomysql>=0.2.0
 aiosqlite>=0.20
+cryptography>=42
 
 # --- 数据校验/配置 ---
 pydantic>=2.7

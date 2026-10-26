@@ -2,6 +2,7 @@
 
 提供鉴权依赖：从 Authorization 头解析 JWT → 加载当前用户。
 所有需要"当前登录用户"的业务接口都应声明依赖此函数，保证数据隔离。
+异步实现（Tortoise-ORM 基于 asyncio，路由处理器同为 async）。
 """
 
 from typing import Annotated
@@ -35,7 +36,7 @@ async def get_current_user(authorization: Annotated[str, Header()]) -> User:
     if payload.get("type") != "access":
         raise BizException("401", "凭证类型错误，请使用登录令牌", status_code=401)
 
-    # 3. 加载用户并校验有效性
+    # 3. 加载用户并校验有效性（Tortoise 主键查询）
     user = await User.get_or_none(id=int(payload["sub"]))
     if user is None or not user.is_active:
         raise BizException("401", "账号不存在或已被禁用", status_code=401)

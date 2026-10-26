@@ -1,6 +1,7 @@
 """认证模块单元测试：注册/登录/刷新/鉴权（PRD 11.1 TC-101~TC-103）。
 
 覆盖：正常流程、重复注册、错误密码、Token 刷新、未登录访问受保护接口。
+数据层：Tortoise-ORM 独立 SQLite 测试库 + 异步 TestClient。
 """
 
 import pytest

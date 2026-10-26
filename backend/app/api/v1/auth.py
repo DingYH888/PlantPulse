@@ -2,6 +2,7 @@
 
 覆盖：注册、登录、刷新 Token、退出、资料、修改密码。
 公开接口：register/login/refresh；其余需 JWT 鉴权。
+数据层：Tortoise-ORM 异步查询（backend/app/models/user.py）。
 """
 
 from fastapi import APIRouter

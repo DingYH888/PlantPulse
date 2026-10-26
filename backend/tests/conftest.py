@@ -1,6 +1,7 @@
 """pytest 全局 fixture：独立测试数据库 + 异步测试客户端。
 
 每个测试用例使用独立的临时 SQLite 文件，保证用例隔离、可重复执行。
+注意：沙箱无法运行 asyncio，请在本地终端执行 pytest。
 """
 
 import os
