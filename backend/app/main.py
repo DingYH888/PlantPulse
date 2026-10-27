@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from tortoise import Tortoise
 
 from app import __version__
@@ -36,8 +37,17 @@ async def lifespan(app: FastAPI):
     """应用生命周期：启动时初始化数据库，关闭时释放连接。
 
     generate_schemas 仅用于开发环境自动建表；生产环境应使用 Aerich 迁移。
+
+    _enable_global_fallback=True：Tortoise 1.1.x 用 ContextVar 管理连接状态，
+    uvicorn 的 lifespan 在后台任务运行，而 HTTP 请求在另一个任务执行，
+    若不启用全局回退，请求侧读不到 lifespan 里建立的连接上下文，
+    会抛 "No TortoiseContext is currently active"。
     """
-    await Tortoise.init(db_url=settings.DATABASE_URL, modules=TORTOISE_MODULES)
+    await Tortoise.init(
+        db_url=settings.DATABASE_URL,
+        modules=TORTOISE_MODULES,
+        _enable_global_fallback=True,
+    )
     if settings.ENV == "development":
         await Tortoise.generate_schemas()
     yield
@@ -66,3 +76,15 @@ register_exception_handlers(app)
 
 # 业务路由统一挂载于 /api/v1 前缀
 app.include_router(api_router, prefix="/api/v1")
+
+# 静态资源（打卡/植物图片）：上传目录映射为 /static，前端 <img> 直接引用 URL
+# StaticFiles 要求目录已存在，挂载前先创建（幂等）
+settings.upload_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=settings.upload_dir), name="static")
+
+r'''
+启动后端命令
+..\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000 --reload
+前端启动
+npm run dev
+'''

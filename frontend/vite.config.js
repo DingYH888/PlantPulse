@@ -18,6 +18,11 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      // 上传的打卡/植物图片也由后端托管（PRD 9.6 静态资源）
+      '/static': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
 })

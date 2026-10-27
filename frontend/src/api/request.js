@@ -1,10 +1,12 @@
-// Axios 统一封装：自动附加 Token、统一返回格式解包、401 自动刷新重放
+// Axios 统一封装：自动附加 Token、统一返回格式解包、401 跳登录
 // 约定：后端统一返回 {code, msg, data}，业务成功以 code==='200' 为准（PRD 9.3）
+// 方案：单 JWT（7 天有效），过期即 401 → 清理本地 Token 并跳转登录页
 import axios from 'axios'
-import { clearTokens, getAccessToken, getRefreshToken, setTokens } from '@/utils/token'
+import { clearTokens, getAccessToken } from '@/utils/token'
 
 const service = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
+  // 后端接口统一挂在 /api/v1 前缀下（PRD 9.7），缺 /v1 会 404
+  baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1',
   timeout: 30000, // AI 生成类接口耗时较长，放宽至 30s
 })
 
@@ -17,30 +19,7 @@ service.interceptors.request.use((config) => {
   return config
 })
 
-// ---- 响应拦截器：统一返回处理 + 401 自动刷新 ----
-let refreshing = null // 单飞：并发 401 时共享同一次刷新请求，避免重复刷新
-
-async function refreshAccessToken() {
-  const refreshToken = getRefreshToken()
-  if (!refreshToken) {
-    throw new Error('缺少刷新凭证')
-  }
-  if (!refreshing) {
-    // service.post 的响应已被本拦截器解包为 data
-    refreshing = service
-      .post('/auth/refresh', { refresh_token: refreshToken })
-      .catch((error) => {
-        clearTokens()
-        throw error
-      })
-      .finally(() => {
-        refreshing = null
-      })
-  }
-  const data = await refreshing
-  setTokens(data.access_token, data.refresh_token)
-}
-
+// ---- 响应拦截器：统一返回处理 + 401 清理登录态 ----
 function redirectToLogin() {
   clearTokens()
   if (!window.location.pathname.startsWith('/login')) {
@@ -55,29 +34,31 @@ service.interceptors.response.use(
     if (body.code === '200') {
       return body.data
     }
-    // 未认证：尝试自动刷新并重放原请求（仅一次）
-    if (body.code === '401' && !response.config._retried) {
-      response.config._retried = true
-      try {
-        await refreshAccessToken()
-        return service(response.config)
-      } catch (error) {
-        redirectToLogin()
-        return Promise.reject(new Error('登录已过期，请重新登录'))
-      }
+    // 未认证/过期：清理本地凭证并跳转登录页
+    if (body.code === '401') {
+      redirectToLogin()
+      return Promise.reject(new Error(body.msg || '登录已过期，请重新登录'))
     }
     // 其他业务错误（400/403/409/429 等）：统一抛出提示
     return Promise.reject(new Error(body.msg || '请求失败'))
   },
   (error) => {
-    // HTTP 层错误：401 同样走刷新链路
-    if (error.response?.status === 401 && !error.config?._retried) {
-      error.config._retried = true
-      refreshAccessToken()
-        .then(() => service(error.config))
-        .catch(() => redirectToLogin())
+    const status = error.response?.status
+    // HTTP 层 401：清理本地凭证并跳转登录页
+    if (status === 401) {
+      redirectToLogin()
     }
-    return Promise.reject(error)
+    // 后端业务错误体为 {code, msg, data}：优先展示中文提示（如「昵称或密码错误」）
+    const body = error.response?.data
+    if (body && typeof body.msg === 'string' && body.msg) {
+      return Promise.reject(new Error(body.msg))
+    }
+    // 无响应体：通常是后端未启动 / 网络中断
+    if (!error.response) {
+      return Promise.reject(new Error('网络异常，请确认后端服务已启动'))
+    }
+    // 兜底：避免直接暴露 "Request failed with status code xxx"
+    return Promise.reject(new Error(`请求失败（HTTP ${status}）`))
   }
 )
 

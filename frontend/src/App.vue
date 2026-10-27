@@ -1,22 +1,26 @@
 <script setup>
 // 应用根组件：全局导航栏 + 页面出口
 // 未登录时（路由守卫已拦截），仅登录页可见，故导航仅在登录态下渲染
+// NMessageProvider：为页面 useMessage() 提供上下文（PRD 交互提示）
+import { NMessageProvider } from 'naive-ui'
 </script>
 
 <template>
-  <div class="app-shell">
-    <header class="app-header">
-      <h1 class="logo">🌿 PlantPulse</h1>
-      <nav class="nav">
-        <RouterLink to="/">植物记录</RouterLink>
-        <RouterLink to="/ai">AI 养护</RouterLink>
-        <RouterLink to="/profile">个人中心</RouterLink>
-      </nav>
-    </header>
-    <main class="app-main">
-      <RouterView />
-    </main>
-  </div>
+  <NMessageProvider>
+    <div class="app-shell">
+      <header class="app-header">
+        <h1 class="logo">🌿 PlantPulse</h1>
+        <nav class="nav">
+          <RouterLink to="/">植物记录</RouterLink>
+          <RouterLink to="/ai">AI 养护</RouterLink>
+          <RouterLink to="/profile">个人中心</RouterLink>
+        </nav>
+      </header>
+      <main class="app-main">
+        <RouterView />
+      </main>
+    </div>
+  </NMessageProvider>
 </template>
 
 <style>

@@ -4,6 +4,7 @@
 """
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -30,6 +31,9 @@ class Settings(BaseSettings):
     # 图形验证码有效期（分钟）
     CAPTCHA_EXPIRE_MINUTES: int = 5
 
+    # 图片上传目录（相对 backend 包目录解析，PRD 9.6）
+    UPLOAD_DIR: str = "static/uploads"
+
     # CORS 允许来源（逗号分隔）
     CORS_ORIGINS: str = "http://localhost:5173"
 
@@ -43,6 +47,14 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         """将 CORS_ORIGINS 字符串解析为列表。"""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    @property
+    def upload_dir(self) -> Path:
+        """上传目录绝对路径：相对 backend 包目录（app/..）解析，避免受运行目录影响。"""
+        path = Path(self.UPLOAD_DIR)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parent.parent / path
+        return path
 
 
 @lru_cache
