@@ -22,6 +22,12 @@ const routes = [
     meta: { title: '植物详情' },
   },
   {
+    path: '/stats',
+    name: 'stats',
+    component: () => import('@/views/Stats.vue'),
+    meta: { title: '数据统计' },
+  },
+  {
     path: '/ai',
     name: 'ai-care',
     component: () => import('@/views/AICare.vue'),

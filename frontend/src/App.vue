@@ -12,6 +12,7 @@ import { NMessageProvider } from 'naive-ui'
         <h1 class="logo">🌿 PlantPulse</h1>
         <nav class="nav">
           <RouterLink to="/">植物记录</RouterLink>
+          <RouterLink to="/stats">数据统计</RouterLink>
           <RouterLink to="/ai">AI 养护</RouterLink>
           <RouterLink to="/profile">个人中心</RouterLink>
         </nav>
@@ -41,6 +42,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
   padding: 14px 24px;
   background: #ffffff;
   border-bottom: 1px solid #e3e8e0;
@@ -48,6 +51,11 @@ body {
 
 .logo {
   font-size: 18px;
+}
+
+.nav {
+  display: flex;
+  flex-wrap: wrap;
 }
 
 .nav a {
@@ -66,5 +74,22 @@ body {
   max-width: 960px;
   margin: 0 auto;
   padding: 20px 16px;
+}
+
+/* 移动端：导航独占一行并均分，避免 4 个入口与 Logo 挤在同一行溢出 */
+@media (max-width: 640px) {
+  .app-header {
+    padding: 12px 16px;
+  }
+
+  .nav {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .nav a {
+    margin-left: 0;
+    font-size: 13px;
+  }
 }
 </style>
