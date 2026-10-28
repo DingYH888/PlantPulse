@@ -1,8 +1,10 @@
 """打卡模块路由（PRD 5.5 / 9.7 P5 接口清单，页面入口为 P2 植物记录）。
 
 覆盖：
-- POST /checkins：新增打卡（选植物 + 类型 + 备注 + 日期 + 多图）
-- GET  /checkins：打卡历史（按植物筛选，时间倒序分页）
+- POST   /checkins：新增打卡（选植物 + 类型 + 备注 + 日期 + 多图）
+- GET    /checkins：打卡历史（按植物筛选，时间倒序分页）
+- GET    /checkins/calendar：月历打卡数据（日历标记 + 当日记录，PRD 9.7 P5）
+- DELETE /checkins/{id}：撤销打卡（仅限当天，PRD FR-503）
 
 业务规则：
 - 数据隔离：plant 必须属于当前用户，否则 403（PRD BR-02）；
@@ -14,17 +16,23 @@
 """
 
 import json
-from datetime import date
-
+from datetime import date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Query
 
 from app.core.deps import CurrentUser
 from app.core.response import BizException, success
+from app.core.timezone import APP_TIMEZONE
 from app.models.plant import Plant
 from app.models.plant_record import PlantRecord
 from app.schemas.checkin import CheckinCreate, CheckinOut
+from app.services.checkin_calendar import (
+    build_calendar,
+    care_type_value,
+    next_month,
+    parse_month,
+)
 
 router = APIRouter()
 
@@ -74,8 +82,11 @@ async def create_checkin(body: CheckinCreate, user: CurrentUser) -> dict:
     plant = await _get_owned_plant(body.plant_id, user.id)
 
     # 2. 日期规则：默认当天；不允许未来日期（BR-04）
-    record_date = body.record_date or date.today()
-    if record_date > date.today():
+    # 统一用应用时区（APP_TIMEZONE）取"今天"，与日历/统计/撤销口径保持一致，
+    # 避免服务器时区非东八区时出现"能打卡但不能撤销"的口径错位。
+    today = datetime.now(APP_TIMEZONE).date()
+    record_date = body.record_date or today
+    if record_date > today:
         raise BizException("400", "不能为未来日期打卡", status_code=400)
 
     # 3. 防重复打卡（BR-03）：同植物同类型同日唯一，唯一约束兜底
@@ -139,3 +150,59 @@ async def list_checkins(
         },
         "查询成功",
     )
+
+# 注意：/calendar 必须与 /{checkin_id} 同方法时不冲突；若后续新增 GET /{id}，
+# 需保证本函数注册在它之前，否则 "calendar" 会被当作路径参数解析。
+@router.get("/calendar")
+async def get_checkin_calendar(
+    user: CurrentUser,
+    month: Annotated[str | None, Query(description="月份 YYYY-MM，不传默认当月")] = None,
+) -> dict:
+    """月历打卡数据（PRD FR-501 / 9.7 GET /checkins/calendar）。
+
+    返回指定月份内有打卡记录的日期数组（含当天次数与类型），前端据此给日历
+    单元格上色并显示打卡次数角标；点击日期再走 GET /checkins?record_date=... 查详情。
+    """
+    today = datetime.now(APP_TIMEZONE).date()
+    try:
+        month_key, first_day = parse_month(month, today)
+    except ValueError:
+        raise BizException("400", "月份格式应为 YYYY-MM", status_code=400)
+
+    rows = await PlantRecord.filter(
+        user_id=user.id,
+        record_date__gte=first_day,
+        record_date__lt=next_month(first_day),
+    ).values_list("record_date", "record_type")
+
+    days = build_calendar((record_date, care_type_value(care_type)) for record_date, care_type in rows)
+    return success(
+        {
+            "month": month_key,
+            "days": days,
+            "checkin_count": sum(day["count"] for day in days),
+            "active_days": len(days),
+        },
+        "查询成功",
+    )
+
+
+@router.delete("/{checkin_id}")
+async def delete_checkin(checkin_id: int, user: CurrentUser) -> dict:
+    """撤销打卡（PRD FR-503）：仅允许撤销当天的记录。
+
+    校验顺序：不存在 404 → 非本人 403（数据隔离 BR-02）→ 非当天 400。
+    撤销后统计与 AI 上下文随查询实时重算，无需额外同步（PRD 5.5.3-5）。
+    """
+    record = await PlantRecord.get_or_none(id=checkin_id)
+    if record is None:
+        raise BizException("404", "打卡记录不存在", status_code=404)
+    if record.user_id != user.id:
+        raise BizException("403", "无权撤销他人的打卡记录", status_code=403)
+
+    today = datetime.now(APP_TIMEZONE).date()
+    if record.record_date != today:
+        raise BizException("400", "仅允许撤销当天的打卡记录", status_code=400)
+
+    await record.delete()
+    return success({}, "已撤销打卡")

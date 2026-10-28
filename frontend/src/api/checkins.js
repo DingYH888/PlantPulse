@@ -21,3 +21,20 @@ export function createCheckin(data) {
 export function getCheckins(params) {
   return service.get('/checkins', { params })
 }
+/**
+ * 月历打卡数据（PRD FR-501）
+ * @param {string} month - YYYY-MM，不传由后端默认当月
+ * @returns {Promise<{month:string,days:Array<{date:string,count:number,types:string[]}>,checkin_count:number,active_days:number}>}
+ */
+export function getCheckinCalendar(month) {
+  return service.get('/checkins/calendar', { params: month ? { month } : {} })
+}
+
+/**
+ * 撤销打卡（仅当天记录，PRD FR-503）
+ * @param {number} checkinId - 打卡记录 id
+ * @returns {Promise<Object>}
+ */
+export function deleteCheckin(checkinId) {
+  return service.delete(`/checkins/${checkinId}`)
+}

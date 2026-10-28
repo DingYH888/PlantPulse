@@ -56,6 +56,15 @@ class Settings(BaseSettings):
             path = Path(__file__).resolve().parent.parent / path
         return path
 
+    @property
+    def static_dir(self) -> Path:
+        """静态资源根目录（/static 挂载点）。
+
+        必须取 upload_dir 的父目录：URL 形如 /static/uploads/<file>，
+        若把 /static 直接挂到 uploads 目录，实际会查找 uploads/uploads/<file> 而 404。
+        """
+        return self.upload_dir.parent
+
 
 @lru_cache
 def get_settings() -> Settings:

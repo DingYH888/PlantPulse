@@ -14,3 +14,15 @@ export async function uploadImage(file) {
   const data = await service.post('/upload/image', formData)
   return data.url
 }
+/**
+ * 上传并更新头像（原子接口）
+ * 服务端一次请求内完成「落盘 → 落库 → 删除旧头像」；
+ * 落库失败会自动回滚新文件，不会留下孤儿文件。
+ * @param {File} file - 原始图片文件
+ * @returns {Promise<Object>} 更新后的用户资料（含 avatar_url）
+ */
+export async function uploadAvatar(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  return service.put('/auth/avatar', formData)
+}

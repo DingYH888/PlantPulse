@@ -39,7 +39,10 @@
 ===================================================================
 """
 
-from fastapi import APIRouter
+import logging
+
+from fastapi import APIRouter, UploadFile
+from tortoise.exceptions import IntegrityError
 
 from app.core.deps import CurrentUser
 from app.core.response import BizException, success
@@ -48,6 +51,8 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
+from app.models.plant import Plant
+from app.models.plant_record import PlantRecord
 from app.models.user import User
 from app.schemas.auth import (
     LoginIn,
@@ -58,13 +63,28 @@ from app.schemas.auth import (
     UserUpdateIn,
 )
 from app.services.captcha import generate_captcha, verify_captcha
+from app.services.image_storage import delete_upload_image, save_upload_image
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _build_token_out(user: User) -> TokenOut:
     """签发登录 JWT（单 token 方案，有效期 7 天）。"""
     return TokenOut(access_token=create_access_token(user.id, user.role))
+
+
+async def _is_image_referenced(url: str, exclude_user_id: int) -> bool:
+    """旧头像文件是否仍被其他业务引用（其他用户头像 / 植物图片 / 打卡图片）。
+
+    存在共享引用时禁止删除，避免把打卡照片等业务图片一并清掉。
+    """
+    if await User.filter(avatar_url=url).exclude(id=exclude_user_id).exists():
+        return True
+    if await Plant.filter(image_url=url).exists():
+        return True
+    # 打卡图片以 JSON 数组字符串落库，用包含匹配判断是否引用该 URL
+    return await PlantRecord.filter(image_url__contains=url).exists()
 
 
 @router.get("/captcha")
@@ -128,13 +148,58 @@ async def get_profile(user: CurrentUser) -> dict:
 
 @router.put("/profile")
 async def update_profile(body: UserUpdateIn, user: CurrentUser) -> dict:
-    """更新用户资料（昵称/头像）。"""
-    if body.nickname is not None:
+    """更新用户资料（昵称/头像，PRD FR-506）。
+
+    昵称即登录账号：变更前先做唯一性预检，避免触发数据库唯一约束导致 500；
+    头像推荐走 PUT /auth/avatar（原子上传 + 落库 + 清理旧图）；
+    此处保留 avatar_url 回写能力以兼容旧调用。
+    """
+    old_avatar_url = user.avatar_url
+    if body.nickname is not None and body.nickname != user.nickname:
+        if await User.exists(nickname=body.nickname):
+            raise BizException("409", "该昵称已被占用，请换一个", status_code=409)
         user.nickname = body.nickname
     if body.avatar_url is not None:
         user.avatar_url = body.avatar_url
-    await user.save(update_fields=["nickname", "avatar_url", "updated_at"])
+    try:
+        await user.save(update_fields=["nickname", "avatar_url", "updated_at"])
+    except IntegrityError:
+        # 并发改名竞态：预检通过后仍可能撞唯一约束，兜底转 409 而非 500
+        raise BizException("409", "该昵称已被占用，请换一个", status_code=409)
+
+    # 头像确实变更后才清理旧文件；仍被其他业务引用时保留，删除失败不影响本次更新
+    if body.avatar_url is not None and old_avatar_url and old_avatar_url != body.avatar_url:
+        if not await _is_image_referenced(old_avatar_url, user.id):
+            delete_upload_image(old_avatar_url)
+
     return success(UserOut.model_validate(user).model_dump(), "更新成功")
+
+
+@router.put("/avatar")
+async def update_avatar(file: UploadFile, user: CurrentUser) -> dict:
+    """上传并更新头像（原子操作，PRD FR-506）。
+
+    「上传 → 落库 → 清理旧头像」在同一次请求内完成：
+    - 落库失败时删除刚上传的新文件，避免产生孤儿文件；
+    - 落库成功后清理旧头像，仍被其他业务引用时保留；
+    - 旧头像删除失败不影响本次更新结果。
+    """
+    old_avatar_url = user.avatar_url
+    new_avatar_url = await save_upload_image(file)
+    try:
+        user.avatar_url = new_avatar_url
+        await user.save(update_fields=["avatar_url", "updated_at"])
+    except Exception:
+        # 落库失败：回滚刚写入的新文件，旧头像保持不变
+        delete_upload_image(new_avatar_url)
+        logger.exception("头像落库失败，已回滚新上传文件：%s", new_avatar_url)
+        raise BizException("500", "头像更新失败，请稍后重试", status_code=500)
+
+    if old_avatar_url and old_avatar_url != new_avatar_url:
+        if not await _is_image_referenced(old_avatar_url, user.id):
+            delete_upload_image(old_avatar_url)
+
+    return success(UserOut.model_validate(user).model_dump(), "头像更新成功")
 
 
 @router.put("/password")

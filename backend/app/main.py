@@ -77,10 +77,12 @@ register_exception_handlers(app)
 # 业务路由统一挂载于 /api/v1 前缀
 app.include_router(api_router, prefix="/api/v1")
 
-# 静态资源（打卡/植物图片）：上传目录映射为 /static，前端 <img> 直接引用 URL
+# 静态资源（打卡/植物/头像图片）：/static 指向上传目录的父级，
+# 保证 URL /static/uploads/<file> 能映射到 upload_dir/<file>（少一层会 404）
 # StaticFiles 要求目录已存在，挂载前先创建（幂等）
 settings.upload_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/static", StaticFiles(directory=settings.upload_dir), name="static")
+settings.static_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=settings.static_dir), name="static")
 
 r'''
 启动后端命令

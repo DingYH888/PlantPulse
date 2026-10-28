@@ -51,10 +51,21 @@ class UserOut(BaseModel):
 
 
 class UserUpdateIn(BaseModel):
-    """更新资料请求：昵称/头像。"""
 
-    nickname: str | None = Field(default=None, max_length=32)
-    avatar_url: str | None = Field(default=None, max_length=512)
+    """更新资料请求：昵称/头像（PRD FR-506）。
+
+    昵称格式与注册保持一致（3-20 位字母数字下划线），避免注册规则管不到的
+    历史脏数据；唯一性由路由层预检 + 数据库唯一约束兜底。
+    """
+
+    nickname: str | None = Field(
+        default=None,
+        min_length=3,
+        max_length=20,
+        pattern=r"^[a-zA-Z0-9_]+$",
+        description="新昵称（登录账号，3-20位字母数字下划线）",
+    )
+    avatar_url: str | None = Field(default=None, max_length=512, description="头像 URL")
 
 
 class PasswordChangeIn(BaseModel):
