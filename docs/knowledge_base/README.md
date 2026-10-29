@@ -21,7 +21,7 @@ PlantPulse/
 - 直接放 `docs/knowledge_base/` 根目录也可以，但**推荐按 `species/` 与 `general/` 分类**：
   - `species/`：品种专属知识，检索时优先命中，回答可标注来源；
   - `general/`：通用知识，品种无专属文档时作为降级来源（节点3b）。
-- `README.md` 与 `_` 开头的文件不会入库。
+- `README.md`、`_template.md` / `_template.txt` 与隐藏文件不会入库，其余文件（包括其他 `_` 开头的文件）都会入库。
 
 ## 2. 支持格式
 
