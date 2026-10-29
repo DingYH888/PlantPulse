@@ -381,7 +381,8 @@ function resetCheckinForm() {
   uploadRef.value?.clear()
 }
 
-async function handleCustomUpload({ file, onSuccess, onError }) {
+// NaiveUI 的 custom-request 回调是 onFinish（不是 onSuccess），未调用会一直停在 uploading
+async function handleCustomUpload({ file, onFinish, onError }) {
   if (checkinForm.images.length >= 5) {
     message.warning('最多上传 5 张图片')
     onError(new Error('超过图片数量上限'))
@@ -391,7 +392,7 @@ async function handleCustomUpload({ file, onSuccess, onError }) {
     const url = await uploadImage(file.file)
     file.url = url
     checkinForm.images.push(url)
-    onSuccess(url)
+    onFinish(url)
   } catch (err) {
     message.error(err.message || '图片上传失败')
     onError(err)

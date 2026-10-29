@@ -2,6 +2,7 @@
 // 应用根组件：全局导航栏 + 页面出口
 // 未登录时（路由守卫已拦截），仅登录页可见，故导航仅在登录态下渲染
 // NMessageProvider：为页面 useMessage() 提供上下文（PRD 交互提示）
+// 四个业务页统一使用浅色绿主题，不再为 AI 页单独切换深色顶栏/全宽布局
 import { NMessageProvider } from 'naive-ui'
 </script>
 

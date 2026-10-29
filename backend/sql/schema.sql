@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS `ai_advice` (
   `id`              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
   `user_id`         BIGINT       NOT NULL COMMENT '归属用户ID（数据隔离键）',
   `plant_id`        BIGINT       NULL COMMENT '关联植物ID（可空：识别未建档场景）',
+  `session_id`      VARCHAR(64)  NULL COMMENT '前端会话ID（多轮对话隔离与历史会话切换键）',
   `input_image_url` VARCHAR(512) NULL COMMENT '输入图片URL（图像识别入参）',
   `species`         VARCHAR(64)  NULL COMMENT '识别/归一化后的品种名',
   `confidence`      DECIMAL(4,2) NULL COMMENT '识别置信度（0~1，<0.6 走未知品种路径）',
@@ -140,6 +141,7 @@ CREATE TABLE IF NOT EXISTS `ai_advice` (
   PRIMARY KEY (`id`),
   KEY `idx_ai_advice_plant_id` (`plant_id`),
   KEY `idx_ai_advice_user_id` (`user_id`),
+  KEY `idx_ai_advice_session_id` (`session_id`),
   CONSTRAINT `fk_ai_advice_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
   CONSTRAINT `fk_ai_advice_plant` FOREIGN KEY (`plant_id`) REFERENCES `plants` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI养护建议表';

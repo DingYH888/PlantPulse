@@ -17,6 +17,9 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        // AI 生成实测 40~60s，避免开发代理默认超时提前返回 504
+        timeout: 130000,
+        proxyTimeout: 130000,
       },
       // 上传的打卡/植物图片也由后端托管（PRD 9.6 静态资源）
       '/static': {

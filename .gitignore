@@ -238,3 +238,6 @@ dist-ssr/
 *.db
 *.db3
 *.sqlite3
+# ===== 向量库持久化（ChromaDB 本地生成，不入库）=====
+backend/chroma_db/*
+!backend/chroma_db/.gitkeep

@@ -83,6 +83,21 @@ const historyDate = ref(Date.now())
 // 当前筛选日期是否为今天（用于空状态文案）
 const isHistoryToday = computed(() => formatDate(historyDate.value) === formatDate(Date.now()))
 
+// ---- 状态：打卡详情弹窗 ----
+const recordModalVisible = ref(false)
+const activeRecord = ref(null)
+
+const recordModalTitle = computed(() => {
+  if (!activeRecord.value) return '打卡详情'
+  return `${activeRecord.value.plant_name || '植物'} · ${activeRecord.value.record_date}`
+})
+
+// 点击历史卡片：放大查看该条打卡的完整信息（图片走内置大图预览）
+function openRecordDetail(record) {
+  activeRecord.value = record
+  recordModalVisible.value = true
+}
+
 // 日期选择器禁止未来日期（PRD BR-04）
 function isDateDisabled(ts) {
   return ts > Date.now()
@@ -205,12 +220,13 @@ function loadMore() {
 }
 
 // 自定义上传：先调后端 /upload/image 拿 URL，再写入文件项供缩略图展示
-async function handleCustomUpload({ file, onSuccess, onError }) {
+// NaiveUI 的 custom-request 回调是 onFinish（不是 onSuccess），未调用会一直停在 uploading
+async function handleCustomUpload({ file, onFinish, onError }) {
   try {
     const url = await uploadImage(file.file)
     file.url = url // 供 n-upload 列表缩略图直接展示
     formModel.images.push(url) // 收集多图 URL，随打卡请求提交
-    onSuccess(url)
+    onFinish(url)
   } catch (err) {
     message.error(err.message || '图片上传失败')
     onError(err)
@@ -416,9 +432,17 @@ onMounted(() => {
           <n-empty :description="isHistoryToday ? '今天还没有打卡记录，快记录第一次养护吧' : '这一天还没有打卡记录'" />
         </div>
 
-        <!-- 记录卡片：植物名称 + 日期 + 类型标签 + 备注 + 图片缩略图（点击预览） -->
+        <!-- 记录卡片：植物名称 + 日期 + 类型标签 + 备注 + 右侧图片缩略图 -->
+        <!-- 缩略图绝对定位在内容区右侧，不参与布局，因此卡片尺寸保持不变 -->
         <div v-else class="record-list">
-          <n-card v-for="record in records" :key="record.id" class="record-item" size="small">
+          <n-card
+            v-for="record in records"
+            :key="record.id"
+            class="record-item"
+            :class="{ 'has-image': record.images.length }"
+            size="small"
+            @click="openRecordDetail(record)"
+          >
             <div class="record-head">
               <div class="record-tags">
                 <n-tag size="small" type="default" :bordered="false">
@@ -431,18 +455,14 @@ onMounted(() => {
               <span class="record-date">{{ record.record_date }}</span>
             </div>
             <p v-if="record.content" class="record-content">{{ record.content }}</p>
-            <!-- 多图缩略图：n-image-group 支持点击放大与组内切换预览 -->
-            <n-image-group v-if="record.images.length" class="record-images">
-              <n-image
-                v-for="img in record.images"
-                :key="img"
-                :src="img"
-                width="72"
-                height="72"
-                object-fit="cover"
-                class="record-thumb"
-              />
-            </n-image-group>
+
+            <!-- 多图：展示首图 + 数量角标，其余图片在详情弹窗中查看 -->
+            <div v-if="record.images.length" class="record-thumb">
+              <img :src="record.images[0]" alt="打卡图片" loading="lazy" />
+              <span v-if="record.images.length > 1" class="record-thumb-more">
+                +{{ record.images.length - 1 }}
+              </span>
+            </div>
           </n-card>
 
           <!-- 加载更多 -->
@@ -494,6 +514,48 @@ onMounted(() => {
           <n-button @click="plantModalVisible = false">取消</n-button>
           <n-button type="primary" :loading="plantSubmitting" @click="handleCreatePlant">保存</n-button>
         </div>
+      </template>
+    </n-modal>
+
+    <!-- 打卡详情弹窗：点击卡片放大查看，右上角 × 关闭 -->
+    <n-modal
+      v-model:show="recordModalVisible"
+      preset="card"
+      :title="recordModalTitle"
+      :bordered="false"
+      closable
+      mask-closable
+      style="width: 680px; max-width: calc(100vw - 32px)"
+    >
+      <template v-if="activeRecord">
+        <div class="detail-head">
+          <div class="record-tags">
+            <n-tag size="small" type="default" :bordered="false">
+              {{ activeRecord.plant_name || `植物#${activeRecord.plant_id}` }}
+            </n-tag>
+            <n-tag
+              :type="CARE_TYPES.find((t) => t.value === activeRecord.care_type)?.tag || 'default'"
+              size="small"
+            >
+              {{ CARE_TYPES.find((t) => t.value === activeRecord.care_type)?.label || activeRecord.care_type }}
+            </n-tag>
+          </div>
+          <span class="record-date">{{ activeRecord.record_date }}</span>
+        </div>
+
+        <p v-if="activeRecord.content" class="detail-content">{{ activeRecord.content }}</p>
+
+        <!-- 详情内按原始比例展示，点击图片可再放大 -->
+        <div v-if="activeRecord.images.length" class="detail-images">
+          <n-image
+            v-for="img in activeRecord.images"
+            :key="img"
+            :src="img"
+            class="detail-image"
+            object-fit="contain"
+          />
+        </div>
+        <div v-else class="detail-empty">这条打卡没有上传图片</div>
       </template>
     </n-modal>
   </div>
@@ -568,6 +630,12 @@ onMounted(() => {
 
 .record-item {
   border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.record-item:hover {
+  box-shadow: 0 2px 10px rgba(63, 143, 71, 0.12);
 }
 
 .record-head {
@@ -602,15 +670,46 @@ onMounted(() => {
   word-break: break-all;
 }
 
-.record-images {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
+/* 缩略图绝对定位：不参与文档流，因此卡片宽高与无图时保持一致 */
+.record-item :deep(.n-card__content) {
+  position: relative;
+}
+
+.record-item.has-image :deep(.n-card__content) {
+  min-height: 64px;
+  padding-right: 76px;
 }
 
 .record-thumb {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  width: 56px;
+  height: 56px;
+  overflow: hidden;
+  border: 1px solid #e3e8e0;
+  border-radius: 8px;
+  background: #f7f9f5;
+  transform: translateY(-50%);
+}
+
+.record-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.record-thumb-more {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  padding: 0 4px;
   border-radius: 6px;
-  cursor: zoom-in;
+  background: rgba(45, 58, 45, 0.72);
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
 }
 
 .load-more {
@@ -620,5 +719,49 @@ onMounted(() => {
 .total-tip {
   font-size: 13px;
   color: #7a8a7a;
+}
+
+/* ---- 打卡详情弹窗 ---- */
+.detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.detail-content {
+  margin-top: 12px;
+  color: #3c4a3c;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.detail-images {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.detail-image {
+  width: 100%;
+  overflow: hidden;
+  border-radius: 10px;
+}
+
+.detail-images :deep(.n-image img) {
+  max-height: 60vh;
+  object-fit: contain;
+}
+
+.detail-empty {
+  margin-top: 14px;
+  padding: 20px;
+  border-radius: 10px;
+  background: #f7f9f5;
+  color: #9aa89a;
+  font-size: 13px;
+  text-align: center;
 }
 </style>

@@ -1,0 +1,27 @@
+# ===== PlantPulse AI 模块依赖（LangChain 0.3 稳定线，禁止 beta/rc）=====
+# 安装命令（在项目根执行）：
+#   .venv\Scripts\python.exe -m pip install -r backend\requirements-ai.txt
+#
+# 版本策略：
+#   1. LangChain 生态全部锁定 0.3.x 稳定线（0.3 是 LCEL + ConversationBufferMemory 均可用的一条线）；
+#   2. 禁止安装 1.x：1.x 移除/迁移了 langchain.memory，会破坏本模块的多轮记忆实现；
+#   3. chromadb 只锁 1.x 主版本，保留补丁浮动，避免 Windows + Python 3.13 無可用 wheel 导致装不上。
+
+# --- LangChain 编排核心 ---
+langchain==0.3.27
+langchain-openai==0.3.28
+langchain-chroma==0.2.4
+
+# --- 向量数据库（本地持久化）---
+chromadb>=1.0.12,<2.0
+
+# --- OpenAI 兼容 SDK（阿里云百炼 LLM / Embedding 共用）---
+openai>=1.97.0,<2.0.0
+
+# --- 文本切分 / Token 统计（langchain 会间接带上，显式声明便于排查）---
+langchain-text-splitters>=0.3.9,<0.4.0
+tiktoken>=0.9.0,<0.13.0
+
+# --- 知识库文档解析（Markdown/TXT 无需额外依赖，PDF/DOCX 各补一个）---
+pypdf>=5.7.0,<7.0.0
+python-docx>=1.1.2,<2.0.0

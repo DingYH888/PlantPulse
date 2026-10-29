@@ -25,6 +25,12 @@ class AiAdvice(TimestampMixin):
         null=True,
         description="关联植物ID（可空：识别未建档场景）",
     )
+    session_id = fields.CharField(
+        max_length=64,
+        null=True,
+        db_index=True,
+        description="前端会话ID（多轮对话隔离与历史会话切换键）",
+    )
     input_image_url = fields.CharField(max_length=512, null=True, description="输入图片URL（图像识别入参）")
     species = fields.CharField(max_length=64, null=True, description="识别/归一化后的品种名")
     confidence = fields.DecimalField(max_digits=4, decimal_places=2, null=True, description="识别置信度（0~1，<0.6 走未知品种路径）")

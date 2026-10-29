@@ -43,6 +43,10 @@ service.interceptors.response.use(
     return Promise.reject(new Error(body.msg || '请求失败'))
   },
   (error) => {
+    // 主动取消（如 AI 诊断中的“取消”按钮）：保留取消语义，交由调用方处理
+    if (axios.isCancel(error)) {
+      return Promise.reject(error)
+    }
     const status = error.response?.status
     // HTTP 层 401：清理本地凭证并跳转登录页
     if (status === 401) {

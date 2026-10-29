@@ -50,6 +50,11 @@ async def lifespan(app: FastAPI):
     )
     if settings.ENV == "development":
         await Tortoise.generate_schemas()
+        # generate_schemas 不会给已有表加列：AI 会话改造需要幂等补 session_id
+        if settings.DATABASE_URL.startswith("mysql"):
+            from app.core.db_migrate import ensure_ai_session_column
+
+            await ensure_ai_session_column()
     yield
     await Tortoise.close_connections()
 
@@ -84,7 +89,7 @@ settings.upload_dir.mkdir(parents=True, exist_ok=True)
 settings.static_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=settings.static_dir), name="static")
 
-r'''
+'''
 启动后端命令
 ..\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000 --reload
 前端启动

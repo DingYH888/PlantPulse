@@ -287,15 +287,27 @@ async def test_list_checkins_filter_by_date(client):
 
 # ---- 图片上传（PRD 9.6 / 10.2.2）----
 
+def _patch_upload_dir(monkeypatch, tmp_path):
+    """将上传目录重定向到临时目录。
+
+    落盘逻辑已下沉到 app.services.image_storage，upload 路由不再持有 settings，
+    因此需要替换 image_storage.get_settings（与 test_profile.py 保持一致）。
+    """
+    from types import SimpleNamespace
+
+    from app.services import image_storage
+
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(
+        image_storage, "get_settings", lambda: SimpleNamespace(upload_dir=upload_dir)
+    )
+    return upload_dir
+
+
 async def test_upload_image_success(client, monkeypatch, tmp_path):
     """上传 png 成功：返回 /static/uploads/ 前缀的 URL，且文件真实落地。"""
-    # 将上传目录指向临时目录，避免测试残留（monkeypatch 自动还原）
-    class FakeSettings:
-        upload_dir = tmp_path
-
-    from app.api.v1 import upload as upload_mod
-
-    monkeypatch.setattr(upload_mod, "settings", FakeSettings())
+    upload_dir = _patch_upload_dir(monkeypatch, tmp_path)
 
     user = await _make_user("upload_ok")
     resp = await client.post(
@@ -306,17 +318,12 @@ async def test_upload_image_success(client, monkeypatch, tmp_path):
     assert resp.status_code == 200
     url = resp.json()["data"]["url"]
     assert url.startswith("/static/uploads/")
-    assert (tmp_path / url.rsplit("/", 1)[-1]).exists()
+    assert (upload_dir / url.rsplit("/", 1)[-1]).exists()
 
 
 async def test_upload_image_wrong_type(client, monkeypatch, tmp_path):
     """非白名单类型（text/plain）返回 400。"""
-    class FakeSettings:
-        upload_dir = tmp_path
-
-    from app.api.v1 import upload as upload_mod
-
-    monkeypatch.setattr(upload_mod, "settings", FakeSettings())
+    _patch_upload_dir(monkeypatch, tmp_path)
 
     user = await _make_user("upload_badtype")
     resp = await client.post(
@@ -330,12 +337,7 @@ async def test_upload_image_wrong_type(client, monkeypatch, tmp_path):
 
 async def test_upload_image_too_large(client, monkeypatch, tmp_path):
     """超过 5MB 返回 400（PRD 10.2.2 图片超限）。"""
-    class FakeSettings:
-        upload_dir = tmp_path
-
-    from app.api.v1 import upload as upload_mod
-
-    monkeypatch.setattr(upload_mod, "settings", FakeSettings())
+    _patch_upload_dir(monkeypatch, tmp_path)
 
     user = await _make_user("upload_big")
     big = b"0" * (5 * 1024 * 1024 + 1)
