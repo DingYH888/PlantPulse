@@ -16,7 +16,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
+from collections.abc import AsyncIterator, Awaitable
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import PydanticOutputParser
@@ -28,11 +30,11 @@ from app.ai.image_utils import ImageAccessError, to_model_image_url
 from app.ai.json_utils import content_to_text, parse_json_payload
 from app.ai.llm import get_chat_model, get_vision_model
 from app.ai.prompts import (
-
     NEW_USER_CONTEXT,
     NO_KNOWLEDGE_CONTEXT,
     VISION_SYSTEM_PROMPT,
     advice_prompt,
+    advice_stream_prompt,
 )
 from app.ai.question_parser import (
     SpeciesMissingError,
@@ -42,6 +44,7 @@ from app.ai.question_parser import (
 )
 from app.ai.retriever import RetrievalResult, retrieve
 from app.ai.schemas import (
+    SECTION_KEYS,
     SECTION_TITLES,
     AdviceSection,
     CareAdviceOutput,
@@ -71,6 +74,172 @@ def _content_to_text(content) -> str:
 def _parse_json_payload(text: str) -> dict:
     """从模型输出中提取 JSON（容忍代码块包裹与前后说明文字）。"""
     return parse_json_payload(text)
+
+
+# ==================== 流式：文本标记 → 结构化建议 ====================
+# 流式通道不让模型输出 JSON：JSON 在 token 流里不可读、也无法边收边渲染。
+# 改为「【标记】正文」的文本协议，流结束后由服务端解析成 sections，
+# 并按检索片段做来源绑定 —— 模型全程不接触 doc_id，杜绝编造引用（PRD 8.4）。
+
+# 前置节点可能长时间没有 token 输出（图像识别 / 向量检索），定期发心跳帧保活
+HEARTBEAT_SECONDS = 10.0
+
+# 模型输出的【标记】→ 固定分节 key（用包含匹配，容忍“温度与湿度建议”这类写法）
+SECTION_MARKER_ALIASES: dict[str, str] = {
+    "浇水": "watering",
+    "水分": "watering",
+    "浇灌": "watering",
+    "光照": "light",
+    "光线": "light",
+    "阳光": "light",
+    "施肥": "fertilizing",
+    "肥料": "fertilizing",
+    "追肥": "fertilizing",
+    "温度与湿度": "temperature_humidity",
+    "温湿度": "temperature_humidity",
+    "温度": "temperature_humidity",
+    "湿度": "temperature_humidity",
+    "病虫害防治": "pest_control",
+    "病虫害": "pest_control",
+    "病虫": "pest_control",
+}
+
+SUMMARY_MARKERS = {"概览", "摘要", "总结", "一句话总结", "结论"}
+WARNING_MARKERS = {"提示", "注意", "注意事项", "风险", "警告", "特别提醒"}
+
+# 服务端来源绑定关键词：分节主题 ↔ 检索片段内容是否覆盖该主题
+SECTION_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "watering": ("浇水", "水分", "浇透", "见干见湿", "盆土", "积水"),
+    "light": ("光照", "光线", "散射光", "阳光", "日照", "遮阴", "暴晒"),
+    "fertilizing": ("施肥", "肥料", "追肥", "薄肥", "复合肥", "营养"),
+    "temperature_humidity": ("温度", "湿度", "通风", "越冬", "空调", "喷雾", "加湿"),
+    "pest_control": ("病", "虫", "介壳", "红蜘蛛", "防治", "腐烂", "霉"),
+}
+
+_MARKER_RE = re.compile(r"【\s*([^】]{1,16}?)\s*】")
+
+
+def _marker_key(marker: str) -> str | None:
+    """把模型输出的标记名归一到 summary / warnings / 分节 key。"""
+    name = (marker or "").strip()
+    if name in SUMMARY_MARKERS:
+        return "summary"
+    if name in WARNING_MARKERS:
+        return "warnings"
+    for alias, key in SECTION_MARKER_ALIASES.items():
+        if alias in name:
+            return key
+    return None
+
+
+def _extract_marked_blocks(text: str) -> tuple[dict[str, str], list[str]]:
+    """按【标记】切分流式正文，返回 ({key: 正文}, 未识别标记列表)。
+
+    最后一段即使没有闭合标记也会被收下，保证“边生成边解析”时已输出的内容不丢。
+    """
+    matches = list(_MARKER_RE.finditer(text or ""))
+    blocks: dict[str, str] = {}
+    unknown: list[str] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = text[start:end].strip()
+        key = _marker_key(match.group(1))
+        if key is None:
+            unknown.append(match.group(1))
+            continue
+        if not body:
+            continue
+        blocks[key] = f"{blocks[key]}\n{body}".strip() if key in blocks else body
+    return blocks, unknown
+
+
+def _split_warnings(text: str | None) -> list[str]:
+    """把【提示】正文按中文/英文分号和换行拆成多条；“无”视为没有风险。"""
+    if not text:
+        return []
+    items = [item.strip() for item in re.split(r"[；;\n]+", text) if item.strip()]
+    return [item for item in items if item.rstrip("。") not in {"无", "暂无"}]
+
+
+def _bind_sources(section_key: str, retrieval: RetrievalResult) -> tuple[str, list[str]]:
+    """服务端按主题关键词把分节绑定到本轮检索到的文档（模型不参与）。"""
+    if not retrieval.chunks:
+        return "general", []
+    keywords = SECTION_KEYWORDS.get(section_key, ())
+    doc_ids: list[str] = []
+    for chunk in retrieval.chunks:
+        haystack = f"{chunk.title}\n{chunk.content}"
+        if any(word in haystack for word in keywords) and chunk.doc_id not in doc_ids:
+            doc_ids.append(chunk.doc_id)
+    if not doc_ids:
+        return "general", []
+    return "knowledge", doc_ids[:2]
+
+
+def parse_advice_text(
+    text: str,
+    retrieval: RetrievalResult,
+    species: str,
+    confidence: float,
+    trace: dict | None = None,
+) -> CareAdviceOutput | None:
+    """把流式正文转换成结构化建议；返回 None 表示没按标记输出（触发降级）。"""
+    blocks, unknown = _extract_marked_blocks(text)
+    sections: list[AdviceSection] = []
+    for key in SECTION_KEYS:
+        body = (blocks.get(key) or "").strip()
+        if not body:
+            continue
+        source_type, doc_ids = _bind_sources(key, retrieval)
+        sections.append(
+            AdviceSection(
+                key=key,
+                title=SECTION_TITLES[key],
+                content=body[:300],
+                doc_ids=doc_ids,
+                source_type=source_type,
+            )
+        )
+
+    if trace is not None:
+        trace["stream_parse"] = {
+            "blocks": sorted(blocks.keys()),
+            "unknown_markers": unknown,
+            "sections": [section.key for section in sections],
+        }
+
+    if not sections:
+        return None
+
+    summary = (blocks.get("summary") or "").strip() or f"以下是针对{species or '未知品种'}的养护建议。"
+    return CareAdviceOutput(
+        species=species or "未知品种",
+        confidence=max(0.0, min(1.0, float(confidence or 0))),
+        is_fallback=not any(section.source_type == "knowledge" for section in sections),
+        summary=summary[:200],
+        sections=sections,
+        warnings=_split_warnings(blocks.get("warnings")),
+    )
+
+
+async def _await_with_heartbeat(awaitable: Awaitable) -> AsyncIterator[tuple[str, object]]:
+    """执行一个节点协程，期间产出心跳事件，结束时产出结果。
+
+    生成器无法 return 值，因此统一用 ("ping", None) / ("result", value) 事件回传。
+    调用方提前退出时会取消底层任务，避免上游 LLM 请求悬挂。
+    """
+    task = asyncio.ensure_future(awaitable)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=HEARTBEAT_SECONDS)
+            if done:
+                yield "result", task.result()
+                return
+            yield "ping", None
+    finally:
+        if not task.done():
+            task.cancel()
 
 
 class CareAdviceWorkflow:
@@ -146,7 +315,8 @@ class CareAdviceWorkflow:
             }
 
         try:
-            data_url = to_model_image_url(image_url)
+            # 读本地图片 + base64 编码是同步磁盘 IO，放线程池避免阻塞事件循环
+            data_url = await asyncio.to_thread(to_model_image_url, image_url)
             model = get_vision_model()
             hint = payload.get("user_species") or "（无）"
             response = await model.ainvoke(
@@ -316,11 +486,9 @@ class CareAdviceWorkflow:
         return {**payload, "care_context": context}
 
     # ---------------- 节点5：LLM 个性化生成 ----------------
-    async def _generate(self, payload: dict) -> dict:
-        """注入系统提示词 + 检索上下文 + 打卡摘要，输出分节 JSON（含降级）。"""
-        started = time.perf_counter()
+    def _build_generation_inputs(self, payload: dict) -> tuple[dict, RetrievalResult]:
+        """组装节点5 提示词入参（同步生成与流式生成共用，保证两路口径一致）。"""
         trace = payload["trace"]
-        settings = self._settings
         retrieval: RetrievalResult = payload["retrieval"]
         context = payload["care_context"]
         species = payload["species"]
@@ -354,8 +522,19 @@ class CareAdviceWorkflow:
             "care_summary": care_summary,
             "knowledge_context": knowledge_context,
             "history": history,
-            "format_instructions": self._parser.get_format_instructions(),
         }
+        return inputs, retrieval
+
+    async def _generate(self, payload: dict) -> dict:
+        """注入系统提示词 + 检索上下文 + 打卡摘要，输出分节 JSON（含降级）。"""
+        started = time.perf_counter()
+        trace = payload["trace"]
+        settings = self._settings
+        inputs, retrieval = self._build_generation_inputs(payload)
+        species = payload["species"]
+        confidence = payload["confidence"]
+        history = inputs["history"]
+        inputs["format_instructions"] = self._parser.get_format_instructions()
 
         # 生成链：提示词 | LLM | 结构化解析（LCEL）
         output: CareAdviceOutput | None = None
@@ -388,6 +567,53 @@ class CareAdviceWorkflow:
             "ms": int((time.perf_counter() - started) * 1000),
         }
         return {**payload, "output": output}
+
+    async def _generate_stream(self, payload: dict) -> AsyncIterator[tuple[str, object]]:
+        """流式生成：逐 token 产出正文，流结束后解析成结构化建议并回传。"""
+        started = time.perf_counter()
+        trace = payload["trace"]
+        settings = self._settings
+        inputs, retrieval = self._build_generation_inputs(payload)
+        species = payload["species"]
+        confidence = payload["confidence"]
+
+        buffer: list[str] = []
+        llm_error = ""
+        try:
+            async for chunk in (advice_stream_prompt | get_chat_model()).astream(inputs):
+                text = _content_to_text(chunk.content)
+                if not text:
+                    continue
+                buffer.append(text)
+                yield "delta", {"text": text}
+        except Exception as exc:  # 网络/鉴权异常：已输出的内容仍尽量解析
+            llm_error = str(exc)
+            logger.warning("流式生成中断（已输出 %d 字符）：%s", sum(len(item) for item in buffer), exc)
+
+        raw = "".join(buffer)
+        output = parse_advice_text(raw, retrieval, species, confidence, trace) if raw.strip() else None
+        if output is None:
+            # 降级：纯通用知识输出（PRD 12 可用性），前端显示“通用知识”角标
+            output = build_general_output(
+                species=species,
+                confidence=confidence,
+                warnings=["AI 生成服务暂时不可用，以下为通用养护知识"],
+            )
+        else:
+            # 复用同步链路的服务端修正：补齐缺失分节、过滤无效 doc_ids、重算 is_fallback
+            output = self._finalize_output(output, retrieval, species, confidence)
+
+        if llm_error:
+            trace["llm_error"] = llm_error
+        trace["generate"] = {
+            "node": 5,
+            "status": "fallback" if output.is_fallback else "success",
+            "model": settings.LLM_MODEL,
+            "stream": True,
+            "ms": int((time.perf_counter() - started) * 1000),
+        }
+        trace["stream_chars"] = len(raw)
+        yield "output", output
 
     # ---------------- 输出修正 ----------------
     def _finalize_output(
@@ -506,9 +732,13 @@ class CareAdviceWorkflow:
             )
             raise AiTimeoutError(f"AI 生成超时（>{settings.AI_TIMEOUT_SECONDS}s）") from exc
 
-        output: CareAdviceOutput = result["output"]
-        retrieval: RetrievalResult = result["retrieval"]
-        trace = result["trace"]
+        return self._build_result(result)
+
+    def _build_result(self, payload: dict) -> dict:
+        """把链路中间态组装成接口返回结构（同步 / 流式两路共用）。"""
+        output: CareAdviceOutput = payload["output"]
+        retrieval: RetrievalResult = payload["retrieval"]
+        trace = payload["trace"]
         trace["total_ms"] = int((time.perf_counter() - float(trace.get("_start", time.perf_counter()))) * 1000)
         trace.pop("_start", None)
 
@@ -524,10 +754,106 @@ class CareAdviceWorkflow:
             "sections": [section.model_dump() for section in output.sections],
             "warnings": output.warnings,
             "doc_refs": doc_refs,
-            "plant_id": result.get("plant_id"),
+            "plant_id": payload.get("plant_id"),
             "trace": trace,
             "status": "success",
         }
+
+    # ---------------- 对外入口（流式） ----------------
+    async def stream(
+        self,
+        user_id: int,
+        plant_id: int | None = None,
+        image_url: str | None = None,
+        user_species: str | None = None,
+        plant_species: str | None = None,
+        question: str | None = None,
+        session_id: str = "default",
+        history: str = "（无历史对话）",
+    ) -> AsyncIterator[tuple[str, dict]]:
+        """流式执行完整 AI-RAG 链路。
+
+        事件类型：
+        - stage：前置节点进度（前端显示“正在识别 / 正在检索”等文案）；
+        - ping：心跳（长耗时节点期间保活，避免代理断开）；
+        - delta：节点5 的正文增量（前端逐字渲染）；
+        - result：结构化建议（接口层负责落库后转成 done 事件）；
+        - error：业务错误（code/msg 与同步接口一致，前端按中文提示展示）。
+
+        前置节点必须在节点5 之前跑完：品种识别、检索、打卡摘要都是生成的输入，
+        因此“真正的流式”只能覆盖节点5，前置节点用 stage 事件给出进度而不是假进度条。
+        """
+        settings = self._settings
+        payload = {
+            "user_id": user_id,
+            "plant_id": plant_id,
+            "image_url": image_url,
+            "user_species": user_species,
+            "question": question,
+            "session_id": session_id,
+            "history": history,
+            "trace": {
+                "nodes": [],
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "_start": time.perf_counter(),
+            },
+        }
+        stages = (
+            (0, "正在理解你的问题", self._parse_question),
+            (1, "正在识别植物品种", self._identify),
+            (2, "正在确认品种信息", self._normalize),
+            (2.5, "正在匹配你的植物档案", self._match_plant),
+            (3, "正在检索养护知识库", self._retrieve),
+            (4, "正在读取近期打卡记录", self._care_context),
+        )
+        try:
+            async with asyncio.timeout(settings.AI_TIMEOUT_SECONDS):
+                for node, label, step in stages:
+                    yield "stage", {"node": node, "label": label}
+                    async for kind, value in _await_with_heartbeat(step(payload)):
+                        if kind == "ping":
+                            yield "ping", {}
+                        else:
+                            payload = value
+
+                async for kind, value in self._generate_stream(payload):
+                    if kind == "delta":
+                        yield kind, value
+                    else:
+                        payload["output"] = value
+
+                result = self._build_result(payload)
+        except TimeoutError:
+            trace = payload["trace"]
+            trace["timeout_seconds"] = settings.AI_TIMEOUT_SECONDS
+            logger.warning(
+                "AI 流式链路超时（%ss），节点进度：%s",
+                settings.AI_TIMEOUT_SECONDS,
+                json.dumps(trace, ensure_ascii=False, default=str),
+            )
+            yield "error", {
+                "code": "504",
+                "msg": f"生成超时（>{settings.AI_TIMEOUT_SECONDS}s），请重试",
+            }
+            return
+        except SpeciesMissingError as exc:
+            yield "error", {"code": "400", "msg": str(exc)}
+            return
+        except AiUnavailableError as exc:
+            yield "error", {"code": "503", "msg": str(exc)}
+            return
+        except ImageAccessError as exc:
+            yield "error", {"code": "400", "msg": str(exc)}
+            return
+        except asyncio.CancelledError:
+            # 前端点击「停止」会取消生成器：不落库、不写记忆，异常继续上抛由框架收尾
+            raise
+        except Exception as exc:
+            logger.exception("AI 流式链路异常：%s", exc)
+            yield "error", {"code": "500", "msg": "AI 服务异常，请稍后重试"}
+            return
+
+        yield "result", result
 
 
 _workflow: CareAdviceWorkflow | None = None
@@ -542,5 +868,11 @@ def get_workflow() -> CareAdviceWorkflow:
 
 
 async def run_care_advice(**kwargs) -> dict:
-    """便捷入口：供 API 层调用。"""
+    """便捷入口：供 API 层调用（同步一次性返回）。"""
     return await get_workflow().run(**kwargs)
+
+
+async def stream_care_advice(**kwargs) -> AsyncIterator[tuple[str, dict]]:
+    """便捷入口：流式执行完整 AI-RAG 链路（供 SSE 接口逐事件转发）。"""
+    async for event in get_workflow().stream(**kwargs):
+        yield event

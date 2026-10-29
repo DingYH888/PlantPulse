@@ -4,6 +4,7 @@
 路由层只负责参数校验与统一返回格式，不感知验证码实现细节。
 """
 
+import asyncio
 import base64
 import io
 import secrets
@@ -15,6 +16,18 @@ from captcha.image import ImageCaptcha
 from app.core.config import get_settings
 from app.core.response import BizException
 from app.models.captcha import CaptchaCode
+
+
+def _render_captcha(code: str) -> str:
+    """渲染 PNG 并转 base64（同步 CPU + 内存操作）。
+
+    PIL 画图与 PNG 编码是纯 CPU 工作，直接放在 async 函数里会阻塞事件循环，
+    因此单独抽成同步函数，由 generate_captcha 通过线程池调用。
+    """
+    image = ImageCaptcha(width=160, height=60)
+    buffer = io.BytesIO()
+    image.write(code, buffer)
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
 def _now() -> datetime:
@@ -48,12 +61,8 @@ async def generate_captcha() -> dict:
     code = f"{secrets.randbelow(10000):04d}"
     captcha_id = uuid.uuid4().hex
 
-    # 3. 渲染图形并转 base64（前端直接 <img src="data:image/png;base64,..."> 展示）
-    image = ImageCaptcha(width=160, height=60)
-    buffer = io.BytesIO()
-    image.write(code, buffer)
-    buffer.seek(0)
-    image_base64 = base64.b64encode(buffer.read()).decode("utf-8")
+    # 3. 渲染图形并转 base64（CPU 密集，放线程池；前端直接 <img src="data:image/png;base64,..."> 展示）
+    image_base64 = await asyncio.to_thread(_render_captcha, code)
 
     # 4. 落库：5 分钟有效期
     settings = get_settings()

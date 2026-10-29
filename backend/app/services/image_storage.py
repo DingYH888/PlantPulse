@@ -11,6 +11,7 @@
 - 删除仅允许上传目录内的文件，外部 URL / 路径穿越一律忽略。
 """
 
+import asyncio
 import logging
 import uuid
 from pathlib import Path
@@ -25,6 +26,16 @@ logger = logging.getLogger(__name__)
 # 允许的图片类型映射：Content-Type → 落地扩展名（PRD 5.2.3）
 ALLOWED_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 MAX_SIZE = 5 * 1024 * 1024  # ≤5MB
+
+
+def _write_upload_file(path: Path, content: bytes) -> None:
+    """同步落盘（由 save_upload_image 放到线程池执行）。
+
+    目录创建与 write_bytes 都是阻塞磁盘 IO，最多 5MB；直接跑在事件循环里
+    会在高并发上传时拖慢所有请求，因此统一走 asyncio.to_thread。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
 
 
 async def save_upload_image(file: UploadFile) -> str:
@@ -42,11 +53,10 @@ async def save_upload_image(file: UploadFile) -> str:
     if len(content) > MAX_SIZE:
         raise BizException("400", "图片大小不能超过 5MB", status_code=400)
 
-    # 3. 落地：uuid 文件名防冲突，目录不存在则自动创建
+    # 3. 落地：uuid 文件名防冲突，目录不存在则自动创建（阻塞 IO 放线程池）
     upload_dir: Path = get_settings().upload_dir
-    upload_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{uuid.uuid4().hex}{ext}"
-    (upload_dir / filename).write_bytes(content)
+    await asyncio.to_thread(_write_upload_file, upload_dir / filename, content)
 
     # 4. 返回与 /static 挂载点一致的 URL，前端 <img> 可直接加载
     return f"/static/{upload_dir.name}/{filename}"

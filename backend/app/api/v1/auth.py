@@ -39,6 +39,7 @@
 ===================================================================
 """
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, UploadFile
@@ -48,8 +49,8 @@ from app.core.deps import CurrentUser
 from app.core.response import BizException, success
 from app.core.security import (
     create_access_token,
-    hash_password,
-    verify_password,
+    hash_password_async,
+    verify_password_async,
 )
 from app.models.plant import Plant
 from app.models.plant_record import PlantRecord
@@ -113,7 +114,7 @@ async def register(body: RegisterIn) -> dict:
     # 3. 创建用户（bcrypt 加密）
     user = await User.create(
         nickname=body.nickname,
-        password_hash=hash_password(body.password),
+        password_hash=await hash_password_async(body.password),
     )
     return success(_build_token_out(user).model_dump(), "注册成功")
 
@@ -122,7 +123,7 @@ async def register(body: RegisterIn) -> dict:
 async def login(body: LoginIn) -> dict:
     """登录（公开接口）：nickname + 密码校验，成功签发 7 天有效 JWT。"""
     user = await User.get_or_none(nickname=body.nickname)
-    if user is None or not verify_password(body.password, user.password_hash):
+    if user is None or not await verify_password_async(body.password, user.password_hash):
         raise BizException("400", "昵称或密码错误", status_code=400)
     if not user.is_active:
         raise BizException("403", "账号已被禁用", status_code=403)
@@ -170,7 +171,7 @@ async def update_profile(body: UserUpdateIn, user: CurrentUser) -> dict:
     # 头像确实变更后才清理旧文件；仍被其他业务引用时保留，删除失败不影响本次更新
     if body.avatar_url is not None and old_avatar_url and old_avatar_url != body.avatar_url:
         if not await _is_image_referenced(old_avatar_url, user.id):
-            delete_upload_image(old_avatar_url)
+            await asyncio.to_thread(delete_upload_image, old_avatar_url)
 
     return success(UserOut.model_validate(user).model_dump(), "更新成功")
 
@@ -191,13 +192,13 @@ async def update_avatar(file: UploadFile, user: CurrentUser) -> dict:
         await user.save(update_fields=["avatar_url", "updated_at"])
     except Exception:
         # 落库失败：回滚刚写入的新文件，旧头像保持不变
-        delete_upload_image(new_avatar_url)
+        await asyncio.to_thread(delete_upload_image, new_avatar_url)
         logger.exception("头像落库失败，已回滚新上传文件：%s", new_avatar_url)
         raise BizException("500", "头像更新失败，请稍后重试", status_code=500)
 
     if old_avatar_url and old_avatar_url != new_avatar_url:
         if not await _is_image_referenced(old_avatar_url, user.id):
-            delete_upload_image(old_avatar_url)
+            await asyncio.to_thread(delete_upload_image, old_avatar_url)
 
     return success(UserOut.model_validate(user).model_dump(), "头像更新成功")
 
@@ -205,8 +206,8 @@ async def update_avatar(file: UploadFile, user: CurrentUser) -> dict:
 @router.put("/password")
 async def change_password(body: PasswordChangeIn, user: CurrentUser) -> dict:
     """修改密码：校验原密码后更新哈希。"""
-    if not verify_password(body.old_password, user.password_hash):
+    if not await verify_password_async(body.old_password, user.password_hash):
         raise BizException("400", "原密码错误", status_code=400)
-    user.password_hash = hash_password(body.new_password)
+    user.password_hash = await hash_password_async(body.new_password)
     await user.save(update_fields=["password_hash", "updated_at"])
     return success({}, "密码修改成功")

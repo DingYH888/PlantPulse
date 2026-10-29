@@ -4,9 +4,12 @@
 import axios from 'axios'
 import { clearTokens, getAccessToken } from '@/utils/token'
 
+// 后端接口基础路径：axios 与流式 fetch 共用，避免两处各算一遍
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+
 const service = axios.create({
   // 后端接口统一挂在 /api/v1 前缀下（PRD 9.7），缺 /v1 会 404
-  baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1',
+  baseURL: API_BASE_URL,
   timeout: 30000, // AI 生成类接口耗时较长，放宽至 30s
 })
 
@@ -20,7 +23,8 @@ service.interceptors.request.use((config) => {
 })
 
 // ---- 响应拦截器：统一返回处理 + 401 清理登录态 ----
-function redirectToLogin() {
+// 导出给流式请求复用（fetch 不走 axios 拦截器，仍需同样的 401 行为）
+export function redirectToLogin() {
   clearTokens()
   if (!window.location.pathname.startsWith('/login')) {
     window.location.href = '/login'

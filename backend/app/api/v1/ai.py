@@ -13,9 +13,12 @@
 """
 
 import asyncio
+import json
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query
+from fastapi.responses import StreamingResponse
 
 from app.ai.advice_service import (
     delete_session,
@@ -36,6 +39,7 @@ from app.services.plant_access import get_owned_plant
 
 router = APIRouter()
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 async def enforce_ai_rate_limit(user: CurrentUser) -> None:
@@ -149,6 +153,114 @@ async def create_care_advice(
     )
 
     return success(await get_advice_detail(user.id, advice.id))
+
+
+def _sse_frame(event: str, data: dict) -> str:
+    """编码一帧 SSE：event 声明事件类型，data 为单行 JSON（内部换行由 JSON 转义）。"""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+
+
+@router.post("/care-advice/stream")
+async def create_care_advice_stream(
+    payload: CareAdviceRequest,
+    user: CurrentUser,
+    _: None = Depends(enforce_ai_rate_limit),
+) -> StreamingResponse:
+    """流式生成个性化养护建议（SSE，PRD FR-402 的流式通道）。
+
+    与同步接口的差异：
+    - 前置节点（解析/识别/定位/检索/打卡摘要）以 stage 事件报告进度；
+    - 节点5 逐 token 以 delta 事件推送正文，前端可边收边渲染；
+    - 落库成功后以 done 事件返回完整建议（含 id / doc_refs / trace）；
+    - 生成期间的业务错误以 error 事件返回（此时 HTTP 已提交 200，无法再改状态码）。
+
+    鉴权、限流、参数校验、植物归属校验仍在建立流之前完成，
+    因此 401 / 403 / 404 / 400 / 429 的 HTTP 语义与同步接口保持一致。
+    """
+    chain = _load_chain_module()
+    from app.ai.memory import get_memory_store
+
+    # 植物归属校验必须在建立流之前：错误可直接返回 403/404，而不是混在流里
+    plant = None
+    if payload.plant_id is not None:
+        plant = await get_owned_plant(payload.plant_id, user.id)
+
+    user_species = (payload.species or "").strip() or None
+    session_id = (payload.session_id or "").strip() or (f"plant-{plant.id}" if plant else "default")
+    memory = get_memory_store()
+    history = memory.history_text(user.id, session_id)
+
+    async def event_stream():
+        result = None
+        try:
+            async for kind, data in chain.stream_care_advice(
+                user_id=user.id,
+                plant_id=payload.plant_id,
+                image_url=payload.image_url,
+                user_species=user_species,
+                question=payload.question,
+                session_id=session_id,
+                history=history,
+            ):
+                if kind == "ping":
+                    # SSE 注释帧：前端不产生事件，仅用于长耗时节点保活
+                    yield ": ping\n\n"
+                elif kind == "stage":
+                    yield _sse_frame("stage", data)
+                elif kind == "delta":
+                    yield _sse_frame("delta", data)
+                elif kind == "error":
+                    yield _sse_frame("error", data)
+                    return
+                elif kind == "result":
+                    result = data
+        except Exception as exc:
+            logger.exception("AI 流式接口异常：%s", exc)
+            yield _sse_frame("error", {"code": "500", "msg": "AI 服务异常，请稍后重试"})
+            return
+
+        if result is None:
+            yield _sse_frame("error", {"code": "500", "msg": "AI 未返回结果，请重试"})
+            return
+
+        # 落库 + 写入内存记忆：与同步接口保持完全一致的持久化行为
+        try:
+            advice_plant_id = result.get("plant_id") or payload.plant_id
+            advice = await save_advice(
+                user.id,
+                advice_plant_id,
+                payload.image_url,
+                result,
+                session_id=session_id,
+                question=payload.question,
+            )
+            memory.append(
+                user.id,
+                session_id,
+                payload.question or "请根据图片给出养护建议",
+                result.get("summary", ""),
+            )
+            detail = await get_advice_detail(user.id, advice.id)
+        except Exception as exc:
+            logger.exception("AI 流式建议落库失败：%s", exc)
+            yield _sse_frame(
+                "error",
+                {"code": "500", "msg": "AI 已生成建议，但保存失败，请稍后重试"},
+            )
+            return
+
+        yield _sse_frame("done", {"code": "200", "msg": "success", "data": detail})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Nginx 等反向代理默认缓冲响应：必须显式关闭，否则增量会被攒到最后一次性下发
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/advices")

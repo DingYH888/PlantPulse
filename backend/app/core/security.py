@@ -4,6 +4,7 @@
 - 密码：bcrypt 加盐哈希，禁止明文存储
 """
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -25,6 +26,21 @@ def verify_password(password: str, hashed: str) -> bool:
     except ValueError:
         # 哈希格式非法时视为校验失败，避免抛出异常
         return False
+
+
+async def hash_password_async(password: str) -> str:
+    """异步密码哈希。
+
+    bcrypt 是纯 CPU 计算（成本因子 12 单次约 200~300ms），在事件循环里直接调用
+    会卡住整个 worker 的其他请求；放到线程池后等待期间事件循环可继续处理 IO。
+    保留同步版本供脚本与测试直接使用（签名不变，向后兼容）。
+    """
+    return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_async(password: str, hashed: str) -> bool:
+    """异步密码校验（同上，避免 bcrypt 阻塞事件循环）。"""
+    return await asyncio.to_thread(verify_password, password, hashed)
 
 
 def _create_token(user_id: int, role: str, expires_delta: timedelta, token_type: str) -> str:

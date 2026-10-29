@@ -13,7 +13,7 @@ import { useMessage } from 'naive-ui'
 import { uploadImage } from '@/api/upload'
 import {
   clearAiSession,
-  createCareAdvice,
+  createCareAdviceStream,
   deleteAiSessionHistory,
   getAiSessionMessages,
   getAiSessions,
@@ -247,29 +247,56 @@ async function sendMessage(text, image, appendUser) {
     })
   }
   const pendingIndex = messages.value.length
-  messages.value.push({ role: 'assistant', pending: true, created_at: new Date().toISOString() })
+  messages.value.push({
+    role: 'assistant',
+    pending: true,
+    stage: '正在理解你的问题...',
+    stream_text: '',
+    created_at: new Date().toISOString(),
+  })
   scrollToBottom()
 
   loading.value = true
   controller = new AbortController()
   try {
+    // 流式：stage 更新进度文案、delta 追加正文，done 后整体替换为建议卡片
     // 不再提交 plant_id / species：品种由问题文本解析或图片识别决定
-    const data = await createCareAdvice(
+    const data = await createCareAdviceStream(
       {
         image_url: image || null,
         question: text || null,
         session_id: sessionId,
       },
-      controller.signal
+      {
+        signal: controller.signal,
+        onStage: (stage) => {
+          const current = messages.value[pendingIndex]
+          if (!current?.pending) return
+          current.stage = stage?.label || current.stage
+          scrollToBottomThrottled()
+        },
+        onDelta: (chunk) => {
+          const current = messages.value[pendingIndex]
+          if (!current?.pending) return
+          current.stream_text = `${current.stream_text || ''}${chunk}`
+          scrollToBottomThrottled()
+        },
+      }
     )
     messages.value[pendingIndex] = { role: 'assistant', advice: data, created_at: new Date().toISOString() }
     await loadSessions()
     scrollToBottom()
   } catch (error) {
-    if (error.code === 'ERR_CANCELED' || error.name === 'CanceledError') {
-      messages.value[pendingIndex] = { role: 'assistant', error: '已停止本次回答', created_at: new Date().toISOString() }
-    } else {
-      messages.value[pendingIndex] = { role: 'assistant', error: error.message, created_at: new Date().toISOString() }
+    const current = messages.value[pendingIndex]
+    // 三种取消形态：axios（ERR_CANCELED/CanceledError）、fetch（AbortError）
+    const aborted =
+      error.code === 'ERR_CANCELED' || error.name === 'CanceledError' || error.name === 'AbortError'
+    messages.value[pendingIndex] = {
+      role: 'assistant',
+      error: aborted ? '已停止生成' : error.message,
+      // 保留已收到的正文：用户已经看到的内容不应因中断/报错凭空消失
+      stream_text: current?.stream_text || '',
+      created_at: new Date().toISOString(),
     }
   } finally {
     loading.value = false
@@ -306,6 +333,31 @@ function scrollToBottom() {
     const element = messagesEl.value
     if (element) element.scrollTop = element.scrollHeight
   })
+}
+
+// 流式增量可能每秒几十次：滚动做节流，避免每个 token 都触发一次 DOM 布局
+let lastScrollAt = 0
+function scrollToBottomThrottled() {
+  const now = Date.now()
+  if (now - lastScrollAt < 80) return
+  lastScrollAt = now
+  scrollToBottom()
+}
+
+// 把流式正文按【标记】切成可直接渲染的分块
+// 流未结束时最后一块可能不完整，属于正常现象（下一帧会补全）
+const MARKER_RE = /【\s*([^】]{1,16})\s*】/g
+function parseStreamBlocks(raw) {
+  const text = raw || ''
+  const matches = [...text.matchAll(MARKER_RE)]
+  if (!matches.length) return text.trim() ? [{ title: '', text: text.trim() }] : []
+  return matches
+    .map((match, index) => {
+      const start = match.index + match[0].length
+      const end = index + 1 < matches.length ? matches[index + 1].index : text.length
+      return { title: match[1], text: text.slice(start, end).trim() }
+    })
+    .filter((block) => block.text)
 }
 
 function formatTime(value) {
@@ -402,10 +454,34 @@ function formatTime(value) {
             <div v-else class="message-row ai-row">
               <div class="avatar ai-avatar">AI</div>
               <div class="bubble ai-bubble">
-                <div v-if="msg.pending" class="typing">
-                  正在识别植物并检索知识库<span class="typing-dots">...</span>
+                <div v-if="msg.pending" class="stream-block">
+                  <div v-if="!msg.stream_text" class="typing">
+                    {{ msg.stage || '正在识别植物并检索知识库' }}<span class="typing-dots">...</span>
+                  </div>
+                  <template v-else>
+                    <div v-if="msg.stage" class="stream-stage">{{ msg.stage }}</div>
+                    <div
+                      v-for="(block, blockIndex) in parseStreamBlocks(msg.stream_text)"
+                      :key="`block-${blockIndex}`"
+                      class="stream-section"
+                    >
+                      <div v-if="block.title" class="stream-title">{{ block.title }}</div>
+                      <p class="stream-text">{{ block.text }}</p>
+                    </div>
+                    <span class="stream-cursor"></span>
+                  </template>
                 </div>
                 <div v-else-if="msg.error" class="error-block">
+                  <div v-if="msg.stream_text" class="stream-block">
+                    <div
+                      v-for="(block, blockIndex) in parseStreamBlocks(msg.stream_text)"
+                      :key="`partial-${blockIndex}`"
+                      class="stream-section"
+                    >
+                      <div v-if="block.title" class="stream-title">{{ block.title }}</div>
+                      <p class="stream-text">{{ block.text }}</p>
+                    </div>
+                  </div>
                   <p>{{ msg.error }}</p>
                   <n-button size="tiny" @click="retryLast">重新发送</n-button>
                 </div>
@@ -734,6 +810,47 @@ function formatTime(value) {
   font-size: 13px;
 }
 
+/* ---- 流式输出：进度文案 + 分块正文 + 光标 ---- */
+.stream-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.stream-stage {
+  color: #9aa89a;
+  font-size: 12px;
+}
+
+.stream-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stream-title {
+  color: #3f8f47;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.stream-text {
+  margin: 0;
+  color: #3c4a3c;
+  font-size: 14px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.stream-cursor {
+  display: inline-block;
+  width: 6px;
+  height: 14px;
+  background: #3f8f47;
+  animation: blink 1s infinite;
+}
+
 .typing-dots {
   display: inline-block;
   animation: blink 1.2s infinite;
@@ -751,8 +868,9 @@ function formatTime(value) {
 
 .error-block {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
   color: #d03050;
   font-size: 13px;
 }
