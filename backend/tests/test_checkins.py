@@ -152,18 +152,16 @@ async def test_create_checkin_future_date(client):
     assert "未来" in resp.json()["msg"]
 
 
-async def test_create_checkin_duplicate(client):
-    """同植物同类型同日重复打卡返回 409（PRD BR-03 / TC-502）。"""
-    user = await _make_user("check_dup")
+async def test_create_checkin_same_type_repeat_allowed(client):
+    """同植物同类型同日允许多条打卡（BR-03 唯一限制已按需求移除）。"""
+    user = await _make_user("check_repeat")
     plant = await _make_plant(user)
 
-    resp = await _create_checkin(client, user, plant.id)
-    assert resp.status_code == 200
-
-    resp = await _create_checkin(client, user, plant.id)
-    assert resp.status_code == 409
-    assert resp.json()["code"] == "409"
-    assert "重复" in resp.json()["msg"]
+    first = await _create_checkin(client, user, plant.id)
+    second = await _create_checkin(client, user, plant.id)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["data"]["id"] != second.json()["data"]["id"]
 
 
 async def test_create_checkin_allow_different_type_same_day(client):
@@ -194,6 +192,126 @@ async def test_create_checkin_plant_not_found(client):
     resp = await _create_checkin(client, user, 99999)
     assert resp.status_code == 404
     assert resp.json()["code"] == "404"
+
+
+# ---- 编辑打卡（个人中心「编辑」入口）----
+
+async def _create_for_edit(client: AsyncClient, nickname: str):
+    """构造一用户 + 一株植物 + 一条打卡，返回 (user, checkin_id)。"""
+    user = await _make_user(nickname)
+    plant = await _make_plant(user)
+    resp = await _create_checkin(client, user, plant.id, content="浇水 200ml")
+    assert resp.status_code == 200
+    return user, resp.json()["data"]["id"]
+
+
+async def test_update_checkin_success(client):
+    """编辑打卡：植物、类型、备注、日期、图片均可修改。"""
+    user, checkin_id = await _create_for_edit(client, "check_edit")
+    new_plant = await _make_plant(user, "发财树")
+
+    resp = await client.put(
+        f"{CHECKINS_URL}/{checkin_id}",
+        json={
+            "plant_id": new_plant.id,
+            "care_type": "fertilizing",
+            "content": "施肥 10g",
+            "record_date": "2026-10-20",
+            "image_urls": ["/static/uploads/a.jpg"],
+        },
+        headers=_auth_headers(user),
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["plant_id"] == new_plant.id
+    assert data["plant_name"] == "发财树"
+    assert data["care_type"] == "fertilizing"
+    assert data["content"] == "施肥 10g"
+    assert data["record_date"] == "2026-10-20"
+    assert data["images"] == ["/static/uploads/a.jpg"]
+
+
+async def test_update_checkin_partial_fields(client):
+    """只传 content 时，其余字段保持原值。"""
+    user, checkin_id = await _create_for_edit(client, "check_edit_partial")
+
+    resp = await client.put(
+        f"{CHECKINS_URL}/{checkin_id}",
+        json={"content": "改过的备注"},
+        headers=_auth_headers(user),
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["content"] == "改过的备注"
+    assert data["care_type"] == "watering"  # 未传字段不变
+
+
+async def test_update_checkin_clear_content_and_images(client):
+    """显式传 null 表示清空备注与图片。"""
+    user, checkin_id = await _create_for_edit(client, "check_edit_clear")
+    await client.put(
+        f"{CHECKINS_URL}/{checkin_id}",
+        json={"image_urls": ["/static/uploads/a.jpg"]},
+        headers=_auth_headers(user),
+    )
+
+    resp = await client.put(
+        f"{CHECKINS_URL}/{checkin_id}",
+        json={"content": None, "image_urls": None},
+        headers=_auth_headers(user),
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["content"] is None
+    assert data["images"] == []
+
+
+async def test_update_checkin_future_date(client):
+    """编辑成未来日期返回 400。"""
+    user, checkin_id = await _create_for_edit(client, "check_edit_future")
+    resp = await client.put(
+        f"{CHECKINS_URL}/{checkin_id}",
+        json={"record_date": "2099-01-01"},
+        headers=_auth_headers(user),
+    )
+    assert resp.status_code == 400
+    assert "未来" in resp.json()["msg"]
+
+
+async def test_update_checkin_other_user_forbidden(client):
+    """不能编辑他人的打卡记录（403）。"""
+    _, checkin_id = await _create_for_edit(client, "check_edit_owner")
+    other = await _make_user("check_edit_other")
+
+    resp = await client.put(
+        f"{CHECKINS_URL}/{checkin_id}", json={"content": "篡改"}, headers=_auth_headers(other)
+    )
+    assert resp.status_code == 403
+    assert resp.json()["code"] == "403"
+
+
+async def test_update_checkin_other_plant_forbidden(client):
+    """把打卡改到他人植物名下返回 403。"""
+    user, checkin_id = await _create_for_edit(client, "check_edit_plant")
+    other = await _make_user("check_edit_plant_other")
+    other_plant = await _make_plant(other, "他人植物")
+
+    resp = await client.put(
+        f"{CHECKINS_URL}/{checkin_id}",
+        json={"plant_id": other_plant.id},
+        headers=_auth_headers(user),
+    )
+    assert resp.status_code == 403
+    assert resp.json()["code"] == "403"
+
+
+async def test_update_checkin_not_found(client):
+    """不存在的打卡记录返回 404。"""
+    user = await _make_user("check_edit_404")
+    resp = await client.put(
+        f"{CHECKINS_URL}/99999", json={"content": "x"}, headers=_auth_headers(user)
+    )
+    assert resp.status_code == 404
 
 
 # ---- 打卡历史（FR-504）----

@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS `plants` (
 -- ------------------------------------------------------------
 -- 4. plant_record 养护/打卡记录表
 -- 约束3：record_type 为原生 ENUM 枚举
--- BR-03：同用户同植物同类型同日期唯一（防重复打卡）
+-- 重复打卡：同植物同类型同日允许多条（原 BR-03 唯一限制已按需求移除）
+-- 已有库升级：ALTER TABLE plant_record DROP INDEX uk_user_plant_type_date;
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `plant_record` (
   `id`          BIGINT      NOT NULL AUTO_INCREMENT COMMENT '主键ID',
@@ -88,7 +89,7 @@ CREATE TABLE IF NOT EXISTS `plant_record` (
   `created_at`  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间（约束4）',
   `updated_at`  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_user_plant_type_date` (`user_id`, `plant_id`, `record_type`, `record_date`),
+  KEY `idx_user_plant_type_date` (`user_id`, `plant_id`, `record_type`, `record_date`),
   KEY `idx_plant_record_plant_id` (`plant_id`),
   KEY `idx_plant_record_user_id` (`user_id`),
   CONSTRAINT `fk_plant_record_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
@@ -145,3 +146,6 @@ CREATE TABLE IF NOT EXISTS `ai_advice` (
   CONSTRAINT `fk_ai_advice_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
   CONSTRAINT `fk_ai_advice_plant` FOREIGN KEY (`plant_id`) REFERENCES `plants` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI养护建议表';
+
+ALTER TABLE plant_record DROP INDEX uk_user_plant_type_date;
+ALTER TABLE plant_record ADD INDEX idx_user_plant_type_date (user_id, plant_id, record_type, record_date);

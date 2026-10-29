@@ -31,7 +31,19 @@ export function getCheckinCalendar(month) {
 }
 
 /**
+ * 编辑打卡记录（个人中心「编辑」入口）
+ * 只传需要修改的字段；content / image_urls 传 null 表示清空
+ * @param {number} checkinId - 打卡记录 id
+ * @param {Object} data - { plant_id?, care_type?, content?, record_date?, image_urls? }
+ * @returns {Promise<Object>} 更新后的打卡记录
+ */
+export function updateCheckin(checkinId, data) {
+  return service.put(`/checkins/${checkinId}`, data)
+}
+
+/**
  * 撤销打卡（仅当天记录，PRD FR-503）
+ * 后端接口保留，前端个人中心已改为「编辑」，不再调用
  * @param {number} checkinId - 打卡记录 id
  * @returns {Promise<Object>}
  */

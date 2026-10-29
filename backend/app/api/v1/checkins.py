@@ -4,12 +4,13 @@
 - POST   /checkins：新增打卡（选植物 + 类型 + 备注 + 日期 + 多图）
 - GET    /checkins：打卡历史（按植物筛选，时间倒序分页）
 - GET    /checkins/calendar：月历打卡数据（日历标记 + 当日记录，PRD 9.7 P5）
+- PUT    /checkins/{id}：编辑打卡（个人中心「编辑」入口）
 - DELETE /checkins/{id}：撤销打卡（仅限当天，PRD FR-503）
 
 业务规则：
 - 数据隔离：plant 必须属于当前用户，否则 403（PRD BR-02）；
 - 日期规则：record_date 默认当天，禁止未来日期 → 400（PRD BR-04）；
-- 防重复：同植物同类型同日唯一 → 409（PRD BR-03）；
+- 重复打卡：同植物同类型同日允许多条（BR-03 唯一限制已按需求移除）；
 - 多图方案：image_urls 数组序列化为 JSON 数组字符串，落库 image_url 单字段。
 
 数据层：Tortoise-ORM 异步查询（backend/app/models/plant_record.py）。
@@ -26,7 +27,7 @@ from app.core.response import BizException, success
 from app.core.timezone import APP_TIMEZONE
 from app.models.plant import Plant
 from app.models.plant_record import PlantRecord
-from app.schemas.checkin import CheckinCreate, CheckinOut
+from app.schemas.checkin import CheckinCreate, CheckinOut, CheckinUpdate
 from app.services.checkin_calendar import (
     build_calendar,
     care_type_value,
@@ -89,16 +90,7 @@ async def create_checkin(body: CheckinCreate, user: CurrentUser) -> dict:
     if record_date > today:
         raise BizException("400", "不能为未来日期打卡", status_code=400)
 
-    # 3. 防重复打卡（BR-03）：同植物同类型同日唯一，唯一约束兜底
-    if await PlantRecord.exists(
-        user_id=user.id,
-        plant_id=body.plant_id,
-        record_type=body.care_type,
-        record_date=record_date,
-    ):
-        raise BizException("409", "重复打卡：该植物今天已进行过此操作", status_code=409)
-
-    # 4. 多图序列化落库：[] → None（保持字段为空，避免存空数组字符串）
+    # 3. 多图序列化落库：[] → None（保持字段为空，避免存空数组字符串）
     image_url = json.dumps(body.image_urls, ensure_ascii=False) if body.image_urls else None
 
     record = await PlantRecord.create(
@@ -185,6 +177,57 @@ async def get_checkin_calendar(
         },
         "查询成功",
     )
+
+
+@router.put("/{checkin_id}")
+async def update_checkin(checkin_id: int, body: CheckinUpdate, user: CurrentUser) -> dict:
+    """编辑打卡记录（个人中心「编辑」入口）。
+
+    - 只更新请求中显式传入的字段，未传字段保持原值；
+    - content / image_urls 显式传 null 表示清空；
+    - 校验顺序：不存在 404 → 非本人 403 → 新植物归属 403 → 日期禁未来 400；
+    - 不校验重复打卡：同植物同类型同日允许多条（BR-03 限制已移除）。
+    """
+    record = await PlantRecord.get_or_none(id=checkin_id)
+    if record is None:
+        raise BizException("404", "打卡记录不存在", status_code=404)
+    if record.user_id != user.id:
+        raise BizException("403", "无权编辑他人的打卡记录", status_code=403)
+
+    fields_set = body.model_fields_set
+    plant_name: str | None = None
+    if (
+        "plant_id" in fields_set
+        and body.plant_id is not None
+        and body.plant_id != record.plant_id
+    ):
+        plant = await _get_owned_plant(body.plant_id, user.id)
+        record.plant_id = plant.id
+        plant_name = plant.name
+
+    if "care_type" in fields_set and body.care_type is not None:
+        record.record_type = body.care_type
+
+    if "content" in fields_set:
+        record.content = (body.content or "").strip() or None
+
+    if "record_date" in fields_set and body.record_date is not None:
+        today = datetime.now(APP_TIMEZONE).date()
+        if body.record_date > today:
+            raise BizException("400", "不能为未来日期打卡", status_code=400)
+        record.record_date = body.record_date
+
+    if "image_urls" in fields_set:
+        urls = body.image_urls or []
+        record.image_url = json.dumps(urls, ensure_ascii=False) if urls else None
+
+    await record.save()
+
+    if plant_name is None:
+        # values_list() 返回 ValuesListQuery，没有 first()；改用 get_or_none 取实体
+        plant = await Plant.get_or_none(id=record.plant_id)
+        plant_name = plant.name if plant else None
+    return success(_checkin_out(record, plant_name).model_dump(), "打卡已更新")
 
 
 @router.delete("/{checkin_id}")

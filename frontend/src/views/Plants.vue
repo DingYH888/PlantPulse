@@ -433,13 +433,11 @@ onMounted(() => {
         </div>
 
         <!-- 记录卡片：植物名称 + 日期 + 类型标签 + 备注 + 右侧图片缩略图 -->
-        <!-- 缩略图绝对定位在内容区右侧，不参与布局，因此卡片尺寸保持不变 -->
         <div v-else class="record-list">
           <n-card
             v-for="record in records"
             :key="record.id"
             class="record-item"
-            :class="{ 'has-image': record.images.length }"
             size="small"
             @click="openRecordDetail(record)"
           >
@@ -454,14 +452,16 @@ onMounted(() => {
               </div>
               <span class="record-date">{{ record.record_date }}</span>
             </div>
-            <p v-if="record.content" class="record-content">{{ record.content }}</p>
 
-            <!-- 多图：展示首图 + 数量角标，其余图片在详情弹窗中查看 -->
-            <div v-if="record.images.length" class="record-thumb">
-              <img :src="record.images[0]" alt="打卡图片" loading="lazy" />
-              <span v-if="record.images.length > 1" class="record-thumb-more">
-                +{{ record.images.length - 1 }}
-              </span>
+            <!-- 图片与备注同行：位于备注右侧、日期下方，不遮挡时间 -->
+            <div v-if="record.content || record.images.length" class="record-body">
+              <p v-if="record.content" class="record-content">{{ record.content }}</p>
+              <div v-if="record.images.length" class="record-thumb">
+                <img :src="record.images[0]" alt="打卡图片" loading="lazy" />
+                <span v-if="record.images.length > 1" class="record-thumb-more">
+                  +{{ record.images.length - 1 }}
+                </span>
+              </div>
             </div>
           </n-card>
 
@@ -670,27 +670,29 @@ onMounted(() => {
   word-break: break-all;
 }
 
-/* 缩略图绝对定位：不参与文档流，因此卡片宽高与无图时保持一致 */
-.record-item :deep(.n-card__content) {
-  position: relative;
+/* 图片与备注同行：位于备注右侧、日期下方，不遮挡时间 */
+.record-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
 }
 
-.record-item.has-image :deep(.n-card__content) {
-  min-height: 64px;
-  padding-right: 76px;
+.record-body .record-content {
+  flex: 1;
+  min-width: 0;
+  margin-top: 0;
 }
 
 .record-thumb {
-  position: absolute;
-  top: 50%;
-  right: 12px;
+  position: relative;
+  flex: none;
   width: 56px;
   height: 56px;
   overflow: hidden;
   border: 1px solid #e3e8e0;
   border-radius: 8px;
   background: #f7f9f5;
-  transform: translateY(-50%);
 }
 
 .record-thumb img {

@@ -27,6 +27,20 @@ class CheckinCreate(BaseModel):
     image_urls: list[str] | None = Field(default=None, description="打卡图片 URL 列表（多图）")
 
 
+class CheckinUpdate(BaseModel):
+    """编辑打卡请求体（个人中心「编辑」入口）。
+
+    字段全部可选：仅更新请求中显式传入的字段，未传字段保持原值。
+    显式传 content/image_urls 为 null 表示清空；plant_id/care_type 不接受 null。
+    """
+
+    plant_id: int | None = Field(default=None, description="植物ID（必须属于当前登录用户）")
+    care_type: RecordType | None = Field(default=None, description="打卡类型（PRD care_type 枚举）")
+    content: str | None = Field(default=None, max_length=512, description="备注内容，null 表示清空")
+    record_date: date | None = Field(default=None, description="打卡日期；禁止未来日期")
+    image_urls: list[str] | None = Field(default=None, description="图片 URL 列表，null 表示清空")
+
+
 class CheckinOut(BaseModel):
     """打卡记录响应模型。
 

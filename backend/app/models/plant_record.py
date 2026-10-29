@@ -52,8 +52,7 @@ class PlantRecord(TimestampMixin):
 
     class Meta:
         table = "plant_record"
-        # 业务规则 BR-03：同一植物同一天同一类型唯一，防止重复打卡
-        unique_together = (("user", "plant", "record_type", "record_date"),)
+        # 同植物同类型同日允许多条打卡（BR-03 唯一限制已按需求移除）
 
     def __str__(self) -> str:
         return f"<PlantRecord id={self.id} plant_id={self.plant_id} type={self.record_type}>"

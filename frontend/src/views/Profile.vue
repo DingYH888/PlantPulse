@@ -8,7 +8,7 @@
 // 模块2 打卡日历区：
 //   5. 月历视图（GET /checkins/calendar?month=YYYY-MM），有记录的日期按打卡次数分级上色 + 次数角标
 //   6. 点击日期查看当天打卡记录（GET /checkins?record_date=YYYY-MM-DD）
-//   7. 当天记录可撤销（DELETE /checkins/{id}，仅当天可撤销，二次确认）
+//   7. 当天记录可编辑（PUT /checkins/{id}：植物、类型、备注、图片；撤销入口已移除）
 //   8. 日历内直接新增打卡（抽屉表单：植物 + 类型 + 备注 + 多图，未来日期禁止）
 //   9. 连续打卡天数 / 本月打卡统计 / 类型偏好（GET /user/stats）
 // 布局：PC 双列（左资料统计、右日历记录），移动端单列，日历 7 列网格自适应
@@ -16,7 +16,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useRouter } from 'vue-router'
 
-import { createCheckin, deleteCheckin, getCheckinCalendar, getCheckins } from '@/api/checkins'
+import { createCheckin, getCheckinCalendar, getCheckins, updateCheckin } from '@/api/checkins'
 import { getPlants } from '@/api/plants'
 import { changePassword, getUserStats, updateProfile } from '@/api/user'
 import { uploadAvatar, uploadImage } from '@/api/upload'
@@ -96,6 +96,9 @@ const uploadRef = ref(null)
 const checkinForm = reactive({ plantId: null, careType: null, note: '', images: [] })
 const checkinError = reactive({ plant: '', careType: '' })
 const checkinSubmitting = ref(false)
+// 编辑模式：editingId 非空时抽屉提交走 PUT /checkins/{id}
+const editingId = ref(null)
+const editingImages = ref([])
 
 // ---- 状态：移动端断点（抽屉全屏/日历紧凑）----
 const isMobile = ref(window.innerWidth < 640)
@@ -372,6 +375,8 @@ function openCheckinDrawer() {
 }
 
 function resetCheckinForm() {
+  editingId.value = null
+  editingImages.value = []
   checkinForm.plantId = null
   checkinForm.careType = null
   checkinForm.note = ''
@@ -379,6 +384,27 @@ function resetCheckinForm() {
   checkinError.plant = ''
   checkinError.careType = ''
   uploadRef.value?.clear()
+}
+
+// 编辑打卡：抽屉复用新增表单，预填原记录，提交时走 PUT /checkins/{id}
+function openEditDrawer(record) {
+  editingId.value = record.id
+  editingImages.value = [...(record.images || [])]
+  checkinForm.plantId = record.plant_id
+  checkinForm.careType = record.care_type
+  checkinForm.note = record.content || ''
+  checkinForm.images = [...editingImages.value]
+  checkinError.plant = ''
+  checkinError.careType = ''
+  uploadRef.value?.clear()
+  drawerVisible.value = true
+  loadPlants()
+}
+
+// 编辑模式只允许移除已有图片，不新增上传，避免影响原记录
+function removeEditImage(url) {
+  editingImages.value = editingImages.value.filter((item) => item !== url)
+  checkinForm.images = [...editingImages.value]
 }
 
 // NaiveUI 的 custom-request 回调是 onFinish（不是 onSuccess），未调用会一直停在 uploading
@@ -412,34 +438,29 @@ async function submitCheckin() {
 
   checkinSubmitting.value = true
   try {
-    await createCheckin({
+    const payload = {
       plant_id: checkinForm.plantId,
       care_type: checkinForm.careType,
       content: checkinForm.note.trim() || null,
-      record_date: selectedDate.value,
       image_urls: checkinForm.images.length ? checkinForm.images : null,
-    })
-    message.success('打卡成功')
+    }
+    if (editingId.value) {
+      await updateCheckin(editingId.value, payload)
+      message.success('打卡已更新')
+    } else {
+      await createCheckin({ ...payload, record_date: selectedDate.value })
+      message.success('打卡成功')
+    }
     drawerVisible.value = false
     resetCheckinForm()
     await Promise.all([loadCalendar(), loadDayRecords(), loadStats()])
   } catch (err) {
-    message.error(err.message || '打卡失败')
+    message.error(err.message || '打卡保存失败')
   } finally {
     checkinSubmitting.value = false
   }
 }
 
-// ---- 撤销当天打卡：二次确认由 n-popconfirm 承担，仅当天记录可撤销 ----
-async function handleDelete(record) {
-  try {
-    await deleteCheckin(record.id)
-    message.success('已撤销打卡')
-    await Promise.all([loadCalendar(), loadDayRecords(), loadStats()])
-  } catch (err) {
-    message.error(err.message || '撤销打卡失败')
-  }
-}
 
 function handleLogout() {
   auth.logout()
@@ -735,30 +756,27 @@ onBeforeUnmount(() => {
                       {{ careMeta(record.care_type).label }}
                     </n-tag>
                   </div>
-                  <n-popconfirm
-                    v-if="isTodaySelected"
-                    positive-text="撤销"
-                    negative-text="取消"
-                    @positive-click="handleDelete(record)"
-                  >
-                    <template #trigger>
-                      <n-button size="tiny" text type="error">撤销</n-button>
-                    </template>
-                    仅当天打卡可撤销，撤销后不可恢复，确认继续吗？
-                  </n-popconfirm>
+                  <n-button size="tiny" text type="primary" @click="openEditDrawer(record)">
+                    编辑
+                  </n-button>
                 </div>
-                <p v-if="record.content" class="record-content">{{ record.content }}</p>
-                <n-image-group v-if="record.images?.length" class="record-images">
-                  <n-image
-                    v-for="img in record.images"
-                    :key="img"
-                    :src="img"
-                    width="64"
-                    height="64"
-                    object-fit="cover"
-                    class="record-thumb"
-                  />
-                </n-image-group>
+
+                <!-- 图片与备注同行：位于备注右侧，不遮挡上方标签与操作按钮 -->
+                <div v-if="record.content || record.images?.length" class="record-body">
+                  <p v-if="record.content" class="record-content">{{ record.content }}</p>
+                  <div v-if="record.images?.length" class="record-thumb">
+                    <n-image
+                      :src="record.images[0]"
+                      width="56"
+                      height="56"
+                      object-fit="cover"
+                      class="record-thumb-img"
+                    />
+                    <span v-if="record.images.length > 1" class="record-thumb-more">
+                      +{{ record.images.length - 1 }}
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
           </n-spin>
@@ -768,7 +786,7 @@ onBeforeUnmount(() => {
 
     <!-- 新增打卡抽屉：日期由日历选择决定，未来日期入口已被禁用 -->
     <n-drawer v-model:show="drawerVisible" :width="isMobile ? '100%' : 460" placement="right">
-      <n-drawer-content :title="`${selectedLabel} 打卡`" closable>
+      <n-drawer-content :title="editingId ? '编辑打卡' : `${selectedLabel} 打卡`" closable>
         <n-form label-placement="top">
           <n-form-item
             label="植物"
@@ -801,17 +819,34 @@ onBeforeUnmount(() => {
           </n-form-item>
 
           <n-form-item label="图片">
-            <n-upload
-              ref="uploadRef"
-              multiple
-              :max="5"
-              accept="image/jpeg,image/png,image/webp"
-              :custom-request="handleCustomUpload"
-              @change="onUploadChange"
-            >
-              <n-button>拍照 / 选择图片</n-button>
-            </n-upload>
-            <span class="field-tip">可选，支持 jpg/png/webp，单张 ≤5MB，最多 5 张</span>
+            <!-- 编辑模式：只展示已有图片并支持移除，不新增上传 -->
+            <div v-if="editingId" class="edit-images">
+              <div v-for="img in editingImages" :key="img" class="edit-image">
+                <img :src="img" alt="打卡图片" />
+                <button
+                  type="button"
+                  class="edit-image-remove"
+                  title="移除该图片"
+                  @click="removeEditImage(img)"
+                >
+                  ×
+                </button>
+              </div>
+              <span v-if="!editingImages.length" class="field-tip">这条打卡没有图片</span>
+            </div>
+            <template v-else>
+              <n-upload
+                ref="uploadRef"
+                multiple
+                :max="5"
+                accept="image/jpeg,image/png,image/webp"
+                :custom-request="handleCustomUpload"
+                @change="onUploadChange"
+              >
+                <n-button>拍照 / 选择图片</n-button>
+              </n-upload>
+              <span class="field-tip">可选，支持 jpg/png/webp，单张 ≤5MB，最多 5 张</span>
+            </template>
           </n-form-item>
 
           <n-form-item label="备注">
@@ -828,7 +863,7 @@ onBeforeUnmount(() => {
           <div class="drawer-footer">
             <n-button @click="drawerVisible = false">取消</n-button>
             <n-button type="primary" :loading="checkinSubmitting" @click="submitCheckin">
-              提交打卡
+              {{ editingId ? '保存修改' : '提交打卡' }}
             </n-button>
           </div>
         </template>
@@ -1245,16 +1280,85 @@ onBeforeUnmount(() => {
   word-break: break-all;
 }
 
-.record-images {
+/* 图片与备注同行：位于备注右侧，不与上方标签/按钮重叠 */
+.record-body {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.record-body .record-content {
+  flex: 1;
+  min-width: 0;
+  margin-top: 0;
 }
 
 .record-thumb {
-  border-radius: 6px;
+  position: relative;
+  flex: none;
+  width: 56px;
+  height: 56px;
+  overflow: hidden;
+  border: 1px solid #e3e8e0;
+  border-radius: 8px;
+  background: #f7f9f5;
+}
+
+.record-thumb-img {
   cursor: zoom-in;
+}
+
+.record-thumb-more {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: rgba(45, 58, 45, 0.72);
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+}
+
+/* 编辑模式：已有图片列表（只允许移除） */
+.edit-images {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.edit-image {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  overflow: hidden;
+  border: 1px solid #e3e8e0;
+  border-radius: 8px;
+}
+
+.edit-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.edit-image-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(45, 58, 45, 0.72);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
 }
 
 .drawer-footer {
